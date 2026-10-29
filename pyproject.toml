@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-multilingual-agent"
+version = "0.1.0"
+description = "Automates multilingual metadata and caption publishing for a Turkish YouTube channel."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  # Web / API
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  # Persistence (async SQLAlchemy; SQLite locally, PostgreSQL in production)
+  "sqlalchemy[asyncio]>=2.0.30",
+  "alembic>=1.13",
+  "aiosqlite>=0.20",
+  "psycopg[binary]>=3.2",
+  # Google APIs / OAuth
+  "google-api-python-client>=2.140",
+  "google-auth>=2.34",
+  "google-auth-oauthlib>=1.2",
+  "google-auth-httplib2>=0.2",
+  # LLM (behind a translation-provider abstraction)
+  "google-genai>=1.0",
+  # Utilities
+  "httpx>=0.27",
+  "srt>=3.5",
+  "webvtt-py>=0.5",
+  "PyYAML>=6.0",
+  "tenacity>=9.0",
+  "defusedxml>=0.7",
+  "cryptography>=43",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "respx>=0.21",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "types-PyYAML",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+  "integration: uses real local infrastructure (database), never real YouTube",
+  "contract: verifies our adapters against recorded/mocked Google API shapes",
+  "e2e: full workflow against fakes; never publishes real content",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["backend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "backend"
+packages = ["app", "scripts"]
+plugins = ["pydantic.mypy"]

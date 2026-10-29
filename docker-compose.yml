@@ -1,0 +1,43 @@
+# Local development stack.
+#   docker compose up -d db              # PostgreSQL only (use with local venv)
+#   docker compose --profile app up      # API container too (from Stage 2)
+#
+# Secrets come from your local .env (never committed). No real YouTube writes
+# happen unless YOUTUBE_PUBLISHING_ENABLED=true, which must stay false until
+# Stage 7 sign-off.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: change-me # local-only credential
+      POSTGRES_DB: youtube_agent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d youtube_agent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    profiles: ["app"]
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://app:change-me@db:5432/youtube_agent
+      CONFIG_DIR: /srv/config
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./config:/srv/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+

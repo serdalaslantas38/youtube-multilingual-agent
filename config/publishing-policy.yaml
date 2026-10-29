@@ -1,0 +1,70 @@
+# Publishing policy (initial settings — NOT permanent rules).
+#
+# The deterministic policy engine (Stage 6) reads this file as defaults; the
+# dashboard can later override per-language modes (stored in the database).
+#
+# Modes:
+#   auto_after_validation  May publish without human approval, but ONLY when
+#                          global.auto_publish_enabled is true AND every
+#                          hard gate below passes.
+#   approval_required      Publishes only after an explicit human approval that
+#                          is bound to the exact content hash being published.
+#   disabled               Never processed or published.
+#
+# Hard gates (enforced in code, intentionally NOT configurable). An AI-generated
+# translation is never published if any of these is true:
+#   - deterministic validation failed
+#   - the quality review flagged the source as ambiguous / blocking issues
+#   - a previous API outcome for this asset is uncertain and not yet reconciled
+#   - required approval is missing, or the approved content was edited afterwards
+#   - YOUTUBE_PUBLISHING_ENABLED (environment kill switch) is false
+version: 1
+
+global:
+  # Master switch for automatic publishing. Must stay false until the owner
+  # explicitly enables it after testing. While false, languages configured as
+  # auto_after_validation behave exactly like approval_required.
+  auto_publish_enabled: false
+
+# Mode for any language that is not listed below (e.g. added via dashboard).
+default_mode: approval_required
+
+languages:
+  en: auto_after_validation
+  ro: auto_after_validation
+  es: approval_required
+  fr: approval_required
+  de: approval_required
+  ar: approval_required
+  it: approval_required
+  ru: approval_required
+
+captions:
+  # What to do when a caption track already exists for a target language.
+  # Only "skip_and_report" is supported: existing tracks are never deleted or
+  # overwritten without an explicit, per-track authorization in the dashboard.
+  existing_track_strategy: skip_and_report
+  # Preferred source of translated subtitles, in order. "youtube_native" uses
+  # captions.download?tlang=..., "llm" uses the configured translation provider.
+  translation_sources:
+    - youtube_native
+    - llm
+  # Maximum characters per single subtitle line before flagging a line-length issue.
+  max_line_length: 84
+  # Maximum number of subtitle cues translated per LLM batch call.
+  llm_batch_size: 40
+
+metadata:
+  # What to do when a localization (title/description) already exists.
+  existing_localization_strategy: skip_and_report
+
+llm:
+  # Provider used for metadata localization, fallback caption translation, and quality review.
+  provider: gemini
+  model_name: gemini-2.5-flash
+  max_output_retries: 2
+  metadata_prompt_name: metadata_localizer.translate.v1
+  caption_prompt_name: caption_translator.translate.v1
+  review_prompt_name: quality_reviewer.review.v1
+
+
