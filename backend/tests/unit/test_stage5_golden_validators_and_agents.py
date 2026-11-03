@@ -241,8 +241,30 @@ async def test_subtitle_service_repairs_tlang_empty_cues_and_falls_back_on_error
     )
 
     fake_llm = FakeStructuredLLMClient()
-    service = SubtitleTranslationService(
+
+    # Default policy is LLM-first (0 YouTube quota units per target language)
+    assert cfg.policy.captions.translation_sources == ["llm", "youtube_native"]
+    llm_first_service = SubtitleTranslationService(
         translation_sources=cfg.policy.captions.translation_sources,
+        llm_client=fake_llm,
+        model_name=cfg.policy.llm.model_name,
+        caption_client=mock_yt,
+        max_line_length=84,
+    )
+    llm_first_res = await llm_first_service.translate(
+        source_caption_id="cap-tr-std",
+        source_cues=src_doc.cues,
+        target_language=en_target,
+        source_language=cfg.languages.source_language,
+        protected_glossary=cfg.languages.protected_glossary,
+    )
+    assert llm_first_res.parsed_doc.is_valid is True
+    assert llm_first_res.provider_used == "fake"
+    assert llm_first_res.quota_units_used == 0
+
+    # Also verify youtube_native -> llm repair and fallback order
+    service = SubtitleTranslationService(
+        translation_sources=["youtube_native", "llm"],
         llm_client=fake_llm,
         model_name=cfg.policy.llm.model_name,
         caption_client=mock_yt,

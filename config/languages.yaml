@@ -119,12 +119,6 @@ target_languages:
     caption_tlang: et
     enabled: true
     rtl: false
-  - code: fa
-    name: Persian
-    native_name: فارسی
-    caption_tlang: fa
-    enabled: true
-    rtl: true
   - code: nl
     name: Dutch
     native_name: Nederlands
@@ -173,12 +167,6 @@ target_languages:
     caption_tlang: ko
     enabled: true
     rtl: false
-  - code: la
-    name: Latin
-    native_name: Latina
-    caption_tlang: la
-    enabled: true
-    rtl: false
   - code: pl
     name: Polish
     native_name: Polski
@@ -221,12 +209,6 @@ target_languages:
     caption_tlang: ms
     enabled: true
     rtl: false
-  - code: ne
-    name: Nepali
-    native_name: नेपाली
-    caption_tlang: ne
-    enabled: true
-    rtl: false
   - code: "no"
     name: Norwegian
     native_name: Norsk
@@ -243,6 +225,12 @@ target_languages:
     name: Slovak
     native_name: Slovenčina
     caption_tlang: sk
+    enabled: true
+    rtl: false
+  - code: sl
+    name: Slovenian
+    native_name: Slovenščina
+    caption_tlang: sl
     enabled: true
     rtl: false
   - code: sr
@@ -273,12 +261,6 @@ target_languages:
     name: Greek
     native_name: Ελληνικά
     caption_tlang: el
-    enabled: true
-    rtl: false
-  - code: zu
-    name: Zulu
-    native_name: isiZulu
-    caption_tlang: zu
     enabled: true
     rtl: false
   - code: cs

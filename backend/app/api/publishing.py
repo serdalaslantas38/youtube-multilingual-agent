@@ -211,6 +211,7 @@ async def publish_ready_assets_for_video_endpoint(
                 include_captions=req.include_captions,
                 is_draft=req.is_draft,
                 allow_set_default_language=req.allow_set_default_language,
+                force=req.force,
             )
             await session.commit()
             return result

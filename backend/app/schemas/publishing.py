@@ -69,6 +69,14 @@ class BatchPublishVideoRequest(_StrictRequest):
     include_captions: bool = True
     is_draft: bool = False
     allow_set_default_language: bool = True
+    force: bool = Field(
+        default=False,
+        description=(
+            "When True, skips manual reconciliation for uncertain attempts, "
+            "auto-approves all validated localized assets bound to their content_hash, "
+            "and publishes them immediately."
+        ),
+    )
 
 
 class BatchPublishVideoResponse(BaseModel):

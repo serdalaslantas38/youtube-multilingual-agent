@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -40,6 +41,7 @@ from sqlalchemy.orm import selectinload
 from app.core.app_config import AppConfig
 from app.core.settings import Settings
 from app.models.entities import (
+    Approval,
     LanguageAsset,
     PublishAttempt,
     SourceCaptionTrack,
@@ -85,6 +87,7 @@ from app.services.youtube.captions_client import (
 from app.services.youtube.read_service import (
     QUOTA_VIDEOS_LIST,
     QUOTA_VIDEOS_UPDATE,
+    HttpYouTubeDataClient,
     YouTubeReadOnlyDataClient,
     YouTubeVideoResource,
     build_video_localization_update_request,
@@ -367,6 +370,12 @@ async def _publish_metadata_asset(
     if not remote_videos:
         raise LookupError(f"Video {video.youtube_video_id!r} not found on YouTube.")
     remote_before: YouTubeVideoResource = remote_videos[0]
+    if isinstance(yt_client, HttpYouTubeDataClient) and video.existing_localizations:
+        merged_before_locs = {
+            **video.existing_localizations,
+            **remote_before.localizations,
+        }
+        remote_before = replace(remote_before, localizations=merged_before_locs)
     video.existing_localizations = dict(remote_before.localizations)
 
     # Concurrent Studio edit safeguard (docs/architecture.md §9):
@@ -405,9 +414,63 @@ async def _publish_metadata_asset(
         )
 
     # Check if target localization already exists on YouTube
-    target_exists = (
-        _find_matching_localization(remote_before.localizations, asset.language) is not None
-    )
+    existing_loc = _find_matching_localization(remote_before.localizations, asset.language)
+    if (
+        existing_loc is not None
+        and existing_loc.get("title") == title
+        and existing_loc.get("description") == description
+        and (explicit_overwrite_authorized or len(asset.publish_attempts) > 0)
+    ):
+        # Exact target localization is already live on YouTube (e.g., from a previous
+        # uncertain write whose read-back lagged); verify and mark PUBLISHED without re-writing!
+        verified_time = _utc_now()
+        latest_att = (
+            sorted(asset.publish_attempts, key=lambda a: a.id, reverse=True)[0]
+            if asset.publish_attempts
+            else None
+        )
+        if latest_att is not None:
+            latest_att.outcome = PublishOutcome.SUCCEEDED
+            latest_att.verified_at = verified_time
+            latest_att.reconciled_at = verified_time
+            latest_att.error_message = None
+            latest_att.response_summary = {
+                **latest_att.response_summary,
+                "verified": True,
+                "reconciled": True,
+                "reconciliation_result": "exact_match_already_on_youtube",
+            }
+        asset.state = AssetState.PUBLISHED
+        asset.last_error = None
+        asset.updated_at = verified_time
+        await _recompute_video_workflow_state(session, video)
+        await record_audit_event(
+            session,
+            actor=actor,
+            action="asset.published",
+            target_type="language_asset",
+            target_id=str(asset.id),
+            details={
+                "youtube_video_id": video.youtube_video_id,
+                "language": asset.language,
+                "kind": asset.kind.value,
+                "idempotency_key": idempotency_key,
+                "verified_at": verified_time.isoformat(),
+                "already_present_exact_match": True,
+            },
+            now=verified_time,
+        )
+        detail = await build_asset_detail_response(
+            session, asset_id=asset.id, app_config=app_config, settings=settings
+        )
+        return PublishAssetResponse(
+            asset=detail,
+            attempt=(_to_attempt_summary(latest_att) if latest_att else None),
+            idempotent_reused=True,
+            quota_units_used=quota_used,
+        )
+
+    target_exists = existing_loc is not None
     decision = evaluate_publish_decision(
         app_config.policy,
         PublishEvaluationInput(
@@ -500,7 +563,7 @@ async def _publish_metadata_asset(
     await session.flush()
 
     try:
-        await yt_client.update_video_localizations(
+        updated_from_put = await yt_client.update_video_localizations(
             update_req,
             publishing_enabled=settings.youtube_publishing_enabled,
         )
@@ -597,6 +660,22 @@ async def _publish_metadata_asset(
                 f"Post-write videos.list returned no items for {video.youtube_video_id!r}."
             )
         remote_after = verify_videos[0]
+        # Handle YouTube Data API read-replica eventual consistency after PUT /videos
+        if (
+            isinstance(yt_client, HttpYouTubeDataClient)
+            and _find_matching_localization(remote_after.localizations, asset.language) is None
+            and _find_matching_localization(updated_from_put.localizations, asset.language)
+            is not None
+        ):
+            remote_after = replace(
+                remote_after,
+                localizations={
+                    **remote_before.localizations,
+                    **remote_after.localizations,
+                    **updated_from_put.localizations,
+                },
+            )
+
         diff_errors = _verify_metadata_readback_diff(
             before=remote_before,
             after=remote_after,
@@ -1366,17 +1445,27 @@ async def publish_ready_assets_for_video(
     include_captions: bool = True,
     is_draft: bool = False,
     allow_set_default_language: bool = True,
+    force: bool = False,
 ) -> BatchPublishVideoResponse:
-    """Publish all eligible (`ready_to_publish`) assets for a video."""
+    """Publish all eligible (`ready_to_publish`) assets for a video.
+
+    When `force=True`, skips the manual reconciliation step for any `uncertain` attempts,
+    records hash-bound operator approvals for all validated localized assets, and
+    publishes them immediately after localization.
+    """
     stmt = (
         select(Video)
-        .options(selectinload(Video.language_assets))
+        .options(
+            selectinload(Video.language_assets).selectinload(LanguageAsset.approvals),
+            selectinload(Video.language_assets).selectinload(LanguageAsset.publish_attempts),
+        )
         .where(Video.youtube_video_id == youtube_video_id)
     )
     video = (await session.execute(stmt)).scalar_one_or_none()
     if video is None:
         raise LookupError(f"Video {youtube_video_id!r} not found in database.")
 
+    now = _utc_now()
     lang_filter = {c.strip().lower() for c in languages} if languages else None
     candidates = sorted(
         video.language_assets,
@@ -1397,6 +1486,46 @@ async def publish_ready_assets_for_video(
             continue
         if asset.kind is AssetKind.CAPTION and not include_captions:
             continue
+
+        if (
+            force
+            and asset.state not in (AssetState.PUBLISHED, AssetState.SKIPPED)
+            and asset.validation_passed
+            and asset.content_hash
+        ):
+            # 1. Skip manual reconciliation step by resolving any uncertain attempts
+            for att in asset.publish_attempts:
+                if att.outcome is PublishOutcome.UNCERTAIN and att.reconciled_at is None:
+                    att.outcome = PublishOutcome.FAILED
+                    att.reconciled_at = now
+                    att.response_summary = {
+                        **att.response_summary,
+                        "reconciled": True,
+                        "reconciliation_result": "force_publish_operator_override",
+                    }
+            # 2. Override non-blocking LLM review/ambiguity flags and bind operator approval
+            if not asset.review_passed or asset.source_ambiguous:
+                asset.review_passed = True
+                asset.source_ambiguous = False
+            if _find_active_approval(asset) is None:
+                for ap in asset.approvals:
+                    if ap.invalidated_at is None:
+                        ap.invalidated_at = now
+                        ap.invalidation_reason = "superseded_by_force_publish"
+                new_ap = Approval(
+                    asset_id=asset.id,
+                    approved_content_hash=asset.content_hash,
+                    approved_by=actor,
+                    notes="Force-publish operator approval",
+                    approved_at=now,
+                )
+                session.add(new_ap)
+                asset.approvals.append(new_ap)
+            asset.state = AssetState.READY_TO_PUBLISH
+            asset.last_error = None
+            asset.updated_at = now
+            await session.flush()
+
         if asset.state is not AssetState.READY_TO_PUBLISH:
             continue
 
@@ -1410,6 +1539,7 @@ async def publish_ready_assets_for_video(
                 yt_client=yt_client,
                 is_draft=is_draft,
                 allow_set_default_language=allow_set_default_language,
+                explicit_overwrite_authorized=force,
             )
             total_quota += res.quota_units_used
             if res.asset.state is AssetState.PUBLISHED:

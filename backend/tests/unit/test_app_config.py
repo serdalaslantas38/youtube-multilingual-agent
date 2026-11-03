@@ -25,7 +25,6 @@ ADDITIONAL_TARGETS = {
     "id",
     "hy",
     "et",
-    "fa",
     "nl",
     "fi",
     "cy",
@@ -34,7 +33,6 @@ ADDITIONAL_TARGETS = {
     "hr",
     "ja",
     "ko",
-    "la",
     "pl",
     "lv",
     "lt",
@@ -42,16 +40,15 @@ ADDITIONAL_TARGETS = {
     "hu",
     "mk",
     "ms",
-    "ne",
     "no",
     "pt-PT",
     "sk",
+    "sl",
     "sr",
     "uk",
     "ur",
     "vi",
     "el",
-    "zu",
     "cs",
     "zh",
     "uz",
@@ -68,7 +65,7 @@ def test_repository_config_is_valid(config_dir: Path) -> None:
     cfg = load_app_config(config_dir)
     assert cfg.languages.source_language.code == "tr"
     assert set(cfg.languages.enabled_codes) == ALL_CONFIGURED_TARGETS
-    assert len(cfg.languages.enabled_codes) == 50
+    assert len(cfg.languages.enabled_codes) == 47
 
 
 async def test_async_loader_matches_sync(config_dir: Path) -> None:
@@ -157,7 +154,7 @@ def test_languages_config_validation(config_dir: Path, mutation, message: str) -
 
 def test_rtl_languages_and_regional_codes_are_configured(config_dir: Path) -> None:
     languages = load_app_config(config_dir).languages
-    for rtl_code in ("ar", "fa", "ur", "he"):
+    for rtl_code in ("ar", "ur", "he"):
         lang = languages.get(rtl_code)
         assert lang is not None and lang.rtl is True
 

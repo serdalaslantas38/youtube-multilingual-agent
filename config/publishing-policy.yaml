@@ -44,11 +44,12 @@ captions:
   # Only "skip_and_report" is supported: existing tracks are never deleted or
   # overwritten without an explicit, per-track authorization in the dashboard.
   existing_track_strategy: skip_and_report
-  # Preferred source of translated subtitles, in order. "youtube_native" uses
-  # captions.download?tlang=..., "llm" uses the configured translation provider.
+  # Preferred source of translated subtitles, in order. "llm" uses the configured
+  # LLM translation provider (0 YouTube quota units per target language), and
+  # "youtube_native" uses captions.download?tlang=... (200 YouTube quota units/lang).
   translation_sources:
-    - youtube_native
     - llm
+    - youtube_native
   # Maximum characters per single subtitle line before flagging a line-length issue.
   max_line_length: 84
   # Maximum number of subtitle cues translated per LLM batch call.

@@ -156,8 +156,8 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
             assert data["youtube_video_id"] == "LYLLaIfYjWs"
             assert data["selected_source_caption_id"] == "cap-tr-std"
             assert data["selected_source_track_kind"] == "standard"
-            # 50 target languages * 2 asset kinds (metadata + caption) = 100 assets
-            assert len(data["assets"]) == 100
+            # 47 target languages * 2 asset kinds (metadata + caption) = 94 assets
+            assert len(data["assets"]) == 94
 
             by_key = {(a["language"], a["kind"]): a for a in data["assets"]}
 
@@ -166,14 +166,16 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
             # 'ru' caption was skipped because it already existed on YouTube
             assert by_key[("ru", "caption")]["state"] == AssetState.SKIPPED.value
 
-            # 'en' caption used youtube_native + LLM repair for cue 3
+            # 'en' caption used LLM-first ('fake') with 0 target-language YouTube quota units
+            # (only 200 units total for downloading the Turkish source caption once)
             en_cap = by_key[("en", "caption")]
             assert en_cap["state"] == AssetState.AWAITING_APPROVAL.value
-            assert en_cap["provider_used"] == "youtube_native+fake_repair"
+            assert en_cap["provider_used"] == "fake"
             assert en_cap["validation_passed"] is True
             assert en_cap["review_passed"] is True
             assert en_cap["caption_cue_count"] == 3
             assert en_cap["prompt_version"] == "caption_translator.translate.v1"
+            assert data["quota_units_used_this_run"] == 200
 
             # 'ro' caption fell back to LLM ('fake') when youtube_native was unavailable
             ro_cap = by_key[("ro", "caption")]
@@ -193,7 +195,7 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
             # GET /api/videos/LYLLaIfYjWs/assets returns the persisted assets
             get_resp = await client.get("/api/videos/LYLLaIfYjWs/assets")
             assert get_resp.status_code == 200
-            assert len(get_resp.json()["assets"]) == 100
+            assert len(get_resp.json()["assets"]) == 94
 
 
 async def test_localize_video_transitions_to_needs_attention_on_source_ambiguity(

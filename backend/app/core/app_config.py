@@ -90,7 +90,7 @@ TranslationSource = Literal["youtube_native", "llm"]
 
 
 def _default_translation_sources() -> list[TranslationSource]:
-    return ["youtube_native", "llm"]
+    return ["llm", "youtube_native"]
 
 
 class CaptionPolicy(_Strict):

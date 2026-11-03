@@ -166,6 +166,7 @@ export const dashboardApi = {
       include_metadata?: boolean;
       include_captions?: boolean;
       is_draft?: boolean;
+      force?: boolean;
     } = {}
   ): Promise<BatchPublishVideoResponse> {
     return requestJson<BatchPublishVideoResponse>(

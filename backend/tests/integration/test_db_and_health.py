@@ -126,14 +126,14 @@ async def test_health_and_readiness_endpoints(tmp_path: Path, config_dir: Path) 
                 "ru",
                 "sq",
                 "pt-PT",
-                "fa",
+                "sl",
                 "ur",
                 "he",
                 "ja",
                 "ko",
                 "zh",
             } <= set(r_body["enabled_target_languages"])
-            assert len(r_body["enabled_target_languages"]) == 50
+            assert len(r_body["enabled_target_languages"]) == 47
             assert r_body["checks"]["database"] is True
             assert r_body["checks"]["config"] is True
 

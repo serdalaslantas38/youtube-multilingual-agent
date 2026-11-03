@@ -19,7 +19,7 @@ from app.services.validation import (
 
 def test_validate_language_code_accepts_enabled_targets(config_dir: Path) -> None:
     languages = load_app_config(config_dir).languages
-    for code in ("en", "ro", "es", "fr", "de", "ar", "it", "ru", "sq", "pt-PT", "fa", "ur", "he"):
+    for code in ("en", "ro", "es", "fr", "de", "ar", "it", "ru", "sq", "pt-PT", "sl", "ur", "he"):
         report = validate_language_code(code, languages)
         assert report.passed is True
         assert report.issues == ()

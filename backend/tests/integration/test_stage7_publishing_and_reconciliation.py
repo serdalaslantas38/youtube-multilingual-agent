@@ -621,3 +621,91 @@ async def test_concurrent_studio_source_drift_aborts_before_write(
             assert data["asset"]["state"] == "needs_attention"
             assert "modified in YouTube Studio" in (data["asset"]["last_error"] or "")
             assert all(c["method"] != "videos.update" for c in mock_yt.recorded_calls)
+
+
+async def test_force_publish_video_skips_reconciliation_and_publishes_all_after_localization(
+    tmp_path: Path,
+    config_dir: Path,
+) -> None:
+    settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
+    app = create_app(settings)
+    remote_video = _build_remote_video()
+    mock_captions = _build_mock_captions()
+    mock_yt = MockYouTubeReadOnlyDataClient(
+        videos_by_id={"LYLLaIfYjWs": remote_video},
+        caption_client=mock_captions,
+    )
+
+    async with app.router.lifespan_context(app):
+        app.state.llm_client = FakeStructuredLLMClient()
+        app.state.caption_client = mock_captions
+        app.state.youtube_data_client = mock_yt
+        await _seed_video_and_source_caption(app, remote_video)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Localize 'en' and 'sl' (Slovenian) -> both in awaiting_approval
+            loc_resp = await client.post(
+                "/api/videos/LYLLaIfYjWs/localize",
+                json={
+                    "languages": ["en", "sl"],
+                    "include_metadata": True,
+                    "include_captions": True,
+                },
+            )
+            assert loc_resp.status_code == 200
+            assets = loc_resp.json()["assets"]
+            assert len(assets) == 4
+            assert all(a["state"] == "awaiting_approval" for a in assets)
+
+            # Force-publish immediately after localization (skips per-asset approval/reconcile)
+            force_resp = await client.post(
+                "/api/videos/LYLLaIfYjWs/publish-ready",
+                json={"languages": ["en", "sl"], "force": True},
+            )
+            assert force_resp.status_code == 200, force_resp.text
+            batch = force_resp.json()
+            assert len(batch["published_asset_ids"]) == 4
+            assert batch["failed_asset_ids"] == []
+            assert batch["uncertain_asset_ids"] == []
+            assert "en" in mock_yt.videos_by_id["LYLLaIfYjWs"].localizations
+            assert "sl" in mock_yt.videos_by_id["LYLLaIfYjWs"].localizations
+
+            # Now test Force Publish on uncertain metadata assets (both landed and not-yet-landed)
+            loc_resp2 = await client.post(
+                "/api/videos/LYLLaIfYjWs/localize",
+                json={
+                    "languages": ["cy", "ka"],
+                    "include_metadata": True,
+                    "include_captions": False,
+                },
+            )
+            by_key = {(a["language"], a["kind"]): a for a in loc_resp2.json()["assets"]}
+            cy_meta = by_key[("cy", "metadata")]
+            ka_meta = by_key[("ka", "metadata")]
+            # Simulate 'cy' failing with timeout AFTER landing on YouTube, and 'ka' BEFORE landing
+            mock_yt.update_video_outcomes[("LYLLaIfYjWs", "cy")] = httpx.ReadTimeout("timeout")
+            mock_yt.update_video_outcomes[("LYLLaIfYjWs", "ka")] = httpx.ReadTimeout("timeout")
+            mock_yt.simulate_update_landed_before_error = True
+            await client.post(
+                "/api/videos/LYLLaIfYjWs/publish-ready",
+                json={"languages": ["cy"], "force": True},
+            )
+            mock_yt.simulate_update_landed_before_error = False
+            await client.post(
+                "/api/videos/LYLLaIfYjWs/publish-ready",
+                json={"languages": ["ka"], "force": True},
+            )
+
+            # Both 'cy' and 'ka' are now in 'uncertain'; clear the timeout and Force Publish!
+            mock_yt.update_video_outcomes.clear()
+            force_uncertain_resp = await client.post(
+                "/api/videos/LYLLaIfYjWs/publish-ready",
+                json={"languages": ["cy", "ka"], "force": True},
+            )
+            assert force_uncertain_resp.status_code == 200
+            batch2 = force_uncertain_resp.json()
+            assert set(batch2["published_asset_ids"]) == {cy_meta["id"], ka_meta["id"]}
+            assert batch2["uncertain_asset_ids"] == []
+            assert batch2["failed_asset_ids"] == []
+            assert batch2["skipped_asset_ids"] == []

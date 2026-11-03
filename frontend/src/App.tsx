@@ -46,7 +46,11 @@ function stateBadgeClass(state: AssetState | string): string {
   if (state === "awaiting_approval" || state === "awaiting_source") {
     return "badge badge-warning";
   }
-  if (state === "needs_attention" || state === "failed" || state === "uncertain") {
+  if (
+    state === "needs_attention" ||
+    state === "failed" ||
+    state === "uncertain"
+  ) {
     return "badge badge-danger";
   }
   return "badge";
@@ -182,23 +186,29 @@ export function App() {
     }
   };
 
-  const handleLocalizeVideo = async (langSubset?: string[]) => {
+  const handleLocalizeVideo = async (
+    langSubset?: string[],
+    metadataOnly = false
+  ) => {
     if (!selectedVideoId) return;
     try {
+      const scopeLabel = metadataOnly
+        ? "Title & Description only (0 YouTube quota)"
+        : "Title, Description & Subtitles";
       setBusyMessage(
         langSubset
-          ? `Running localization & review for ${langSubset.join(", ")}...`
-          : "Running localization & quality review across enabled languages..."
+          ? `Running localization (${scopeLabel}) for ${langSubset.join(", ")}...`
+          : `Running localization (${scopeLabel}) across enabled languages...`
       );
       setErrorBanner(null);
       const res = await dashboardApi.localizeVideo(selectedVideoId, {
         languages: langSubset,
         include_metadata: true,
-        include_captions: true,
+        include_captions: !metadataOnly,
       });
       setLocalization(res);
       setNoticeBanner(
-        `Localization complete (${res.quota_units_used_this_run} YouTube quota units used).`
+        `Localization (${scopeLabel}) complete (${res.quota_units_used_this_run} YouTube quota units used).`
       );
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -273,7 +283,8 @@ export function App() {
 
   const handleRejectAsset = async () => {
     if (!selectedAsset) return;
-    const reason = rejectReason.trim() || "Needs manual revision before publishing";
+    const reason =
+      rejectReason.trim() || "Needs manual revision before publishing";
     try {
       setBusyMessage("Rejecting asset...");
       setErrorBanner(null);
@@ -368,15 +379,18 @@ export function App() {
     }
   };
 
-  const handlePublishReadyForVideo = async () => {
+  const handlePublishReadyForVideo = async (force = false) => {
     if (!selectedVideoId) return;
     try {
       setBusyMessage(
-        "Publishing all ready_to_publish assets for this video and verifying read-back..."
+        force
+          ? "Force-publishing all localized assets (skipping manual reconciliation & auto-approving validated assets)..."
+          : "Publishing all ready_to_publish assets for this video and verifying read-back..."
       );
       setErrorBanner(null);
       const res = await dashboardApi.publishReadyAssetsForVideo(
-        selectedVideoId
+        selectedVideoId,
+        { force }
       );
       await loadVideoAssets(selectedVideoId);
       if (selectedAsset) {
@@ -390,7 +404,7 @@ export function App() {
       setChannelStatus(chan);
       setAuditEvents(audits);
       setNoticeBanner(
-        `Batch publish finished: ${res.published_asset_ids.length} published, ${res.skipped_asset_ids.length} skipped, ${res.uncertain_asset_ids.length} uncertain, ${res.failed_asset_ids.length} failed (${res.quota_units_used} quota units).`
+        `${force ? "Force publish" : "Batch publish"} finished: ${res.published_asset_ids.length} published, ${res.skipped_asset_ids.length} skipped, ${res.uncertain_asset_ids.length} uncertain, ${res.failed_asset_ids.length} failed (${res.quota_units_used} quota units).`
       );
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -661,7 +675,7 @@ export function App() {
                       </strong>
                     </div>
                   </div>
-                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     <button
                       className="btn"
                       onClick={() => void handleInspectCaptions()}
@@ -671,14 +685,23 @@ export function App() {
                     </button>
                     <button
                       className="btn btn-primary"
-                      onClick={() => void handleLocalizeVideo()}
+                      onClick={() => void handleLocalizeVideo(undefined, true)}
                       disabled={Boolean(busyMessage)}
+                      title="Translate only Title & Description using Gemini (0 YouTube API quota units)"
                     >
-                      Localize All Enabled Languages
+                      Localize Only Title & Description
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => void handleLocalizeVideo(undefined, false)}
+                      disabled={Boolean(busyMessage)}
+                      title="Translate Title, Description & Subtitles for all enabled languages"
+                    >
+                      Localize All (Title, Desc & Subtitles)
                     </button>
                     <button
                       className="btn btn-success"
-                      onClick={() => void handlePublishReadyForVideo()}
+                      onClick={() => void handlePublishReadyForVideo(false)}
                       disabled={
                         Boolean(busyMessage) ||
                         !policySettings?.youtube_publishing_enabled
@@ -690,6 +713,21 @@ export function App() {
                       }
                     >
                       Publish Ready Assets
+                    </button>
+                    <button
+                      className="btn btn-danger"
+                      onClick={() => void handlePublishReadyForVideo(true)}
+                      disabled={
+                        Boolean(busyMessage) ||
+                        !policySettings?.youtube_publishing_enabled
+                      }
+                      title={
+                        policySettings?.youtube_publishing_enabled
+                          ? "Skip manual reconciliation, auto-approve all validated localized assets, and publish all immediately"
+                          : "YOUTUBE_PUBLISHING_ENABLED is false in .env"
+                      }
+                    >
+                      Force Publish All
                     </button>
                   </div>
                 </div>
@@ -725,14 +763,26 @@ export function App() {
                             </span>
                           )}
                         </div>
-                        <button
-                          className="btn"
-                          style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
-                          onClick={() => void handleLocalizeVideo([lang.code])}
-                          disabled={Boolean(busyMessage)}
-                        >
-                          Translate {lang.code.toUpperCase()}
-                        </button>
+                        <div style={{ display: "flex", gap: "0.35rem" }}>
+                          <button
+                            className="btn"
+                            style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
+                            onClick={() => void handleLocalizeVideo([lang.code], true)}
+                            disabled={Boolean(busyMessage)}
+                            title="Localize only Title & Description for this language (0 YouTube quota)"
+                          >
+                            Title & Desc Only
+                          </button>
+                          <button
+                            className="btn"
+                            style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
+                            onClick={() => void handleLocalizeVideo([lang.code], false)}
+                            disabled={Boolean(busyMessage)}
+                            title="Localize Title, Description & Subtitles for this language"
+                          >
+                            Translate {lang.code.toUpperCase()}
+                          </button>
+                        </div>
                       </div>
 
                       <div className="asset-row">
@@ -1212,8 +1262,8 @@ export function App() {
                                     att.outcome === "succeeded"
                                       ? "badge badge-success"
                                       : att.outcome === "uncertain"
-                                      ? "badge badge-warning"
-                                      : "badge badge-danger"
+                                        ? "badge badge-warning"
+                                        : "badge badge-danger"
                                   }
                                 >
                                   {att.outcome}
@@ -1382,4 +1432,3 @@ export function App() {
     </div>
   );
 }
-
