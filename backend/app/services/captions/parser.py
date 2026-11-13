@@ -28,7 +28,8 @@ _VTT_TIME_RE = re.compile(r"^(?:(?P<h>\d{2,}):)?(?P<m>[0-5]\d):(?P<s>[0-5]\d)\.(
 
 # Pattern matching an SRT cue header (index line + timing line)
 _SRT_CUE_HEADER_RE = re.compile(
-    r"(?m)^(?P<idx>\d+)\s*\n(?P<timing>\d{2,}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2,}:\d{2}:\d{2},\d{3}[^\n]*)\n?"
+    r"(?m)^(?P<idx>\d+)[ \t]*\n"
+    r"(?P<timing>\d{2,}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2,}:\d{2}:\d{2},\d{3}[^\n]*)\n?"
 )
 
 
@@ -137,6 +138,43 @@ def normalize_youtube_tlang_srt(raw_content: str | bytes) -> tuple[str, list[int
             rebuilt_blocks.append(f"{idx}\n{timing}\n{body_str}")
 
     return "\n\n".join(rebuilt_blocks) + "\n", empty_indices
+
+
+def normalize_source_srt(raw_content: str | bytes) -> str:
+    """Repair YouTube Studio source SRT quirks (internal blank lines and empty timing blocks).
+
+    YouTube's ``captions.download?tfmt=srt`` for creator-edited source tracks can include:
+    1. Internal blank lines inside a multi-line cue (which naively splits one cue into an
+       ``empty_cue_text`` block plus a ``malformed_cue_block`` without a timing header).
+    2. Blank timing slots where caption text was cleared in YouTube Studio without deleting
+       the cue slot (``empty_cue_text``).
+
+    This normalizer splits by cue headers (``idx + timing``), collapses internal blank lines,
+    drops empty source cues, and re-indexes sequentially ``1..N``.
+    """
+    decoded, _ = _decode_subtitle_bytes(raw_content)
+    if not decoded:
+        return ""
+    text = decoded.replace("\r\n", "\n").replace("\r", "\n").strip()
+    matches = list(_SRT_CUE_HEADER_RE.finditer(text))
+    if not matches:
+        return text
+
+    rebuilt_blocks: list[str] = []
+    seq_idx = 0
+    for i, match in enumerate(matches):
+        timing = match.group("timing").strip()
+        body_start = match.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        raw_body = text[body_start:body_end]
+        non_empty_lines = [ln.strip() for ln in raw_body.split("\n") if ln.strip()]
+        if not non_empty_lines:
+            continue
+        seq_idx += 1
+        body_str = "\n".join(non_empty_lines)
+        rebuilt_blocks.append(f"{seq_idx}\n{timing}\n{body_str}")
+
+    return ("\n\n".join(rebuilt_blocks) + "\n") if rebuilt_blocks else ""
 
 
 def _parse_timestamp_ms(raw: str, fmt: SubtitleFormat) -> int | None:

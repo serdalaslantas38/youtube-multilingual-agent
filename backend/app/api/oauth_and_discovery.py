@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -36,6 +37,7 @@ from app.services.youtube.discovery import (
     ChannelNotConnectedError,
     discover_channel_videos,
     get_active_channel_connection,
+    import_video_by_url_or_id,
     inspect_and_persist_video_captions,
     mint_access_token_for_channel,
     run_and_persist_caption_probe,
@@ -294,10 +296,19 @@ async def get_channel_status(request: Request) -> ChannelStatusResponse:
         )
 
 
+class ImportVideoRequest(BaseModel):
+    video_url_or_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="YouTube video URL (watch, shorts, youtu.be, studio) or 11-char video ID.",
+    )
+
+
 @router.post("/api/videos/discover", response_model=VideoDiscoveryResponse)
 async def discover_videos_endpoint(
     request: Request,
-    max_results: int = Query(default=10, ge=1, le=50),
+    max_results: int = Query(default=50, ge=1, le=500),
 ) -> VideoDiscoveryResponse:
     """Discover recent videos from the connected channel's uploads playlist (read-only)."""
     settings: Settings = request.app.state.settings
@@ -344,6 +355,56 @@ async def discover_videos_endpoint(
             videos=[_to_video_summary(v) for v in videos],
             today_quota_units_used=quota_today,
         )
+
+
+@router.post("/api/videos/import", response_model=DiscoveredVideoSummary)
+async def import_video_endpoint(
+    body: ImportVideoRequest,
+    request: Request,
+) -> DiscoveredVideoSummary:
+    """Import any older video from the connected channel by its YouTube URL or 11-char ID."""
+    settings: Settings = request.app.state.settings
+    app_cfg: AppConfig = request.app.state.app_config
+    session_factory = _get_session_factory(request)
+    token_client = _get_token_client(request)
+
+    async with session_factory() as session:
+        try:
+            conn, access_token = await mint_access_token_for_channel(
+                session, settings=settings, token_client=token_client
+            )
+        except ChannelNotConnectedError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except (OAuthTokenExchangeError, TokenEncryptionError) as exc:
+            await session.commit()
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+        yt_client = _build_yt_client(request, access_token)
+        try:
+            video = await import_video_by_url_or_id(
+                session,
+                yt_client=yt_client,
+                url_or_id=body.video_url_or_id,
+                expected_channel_id=conn.youtube_channel_id,
+                source_language=app_cfg.languages.source_language.code,
+            )
+            await session.commit()
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        except LookupError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ChannelBindingMismatchError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except YouTubeApiError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+        return _to_video_summary(video)
 
 
 @router.get("/api/videos", response_model=list[DiscoveredVideoSummary])

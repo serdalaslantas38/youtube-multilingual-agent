@@ -10,13 +10,20 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app.core.app_config import SourceLanguage, TargetLanguage
+from app.core.app_config import MetadataTranslationSource, SourceLanguage, TargetLanguage
 from app.prompts.loader import aload_prompt_template
 from app.schemas.localization import LocalizedMetadataLLMOutput
-from app.services.translation.providers import LLMOutputValidationError, LLMStructuredClient
+from app.services.translation.providers import (
+    GoogleMetadataTranslator,
+    LLMOutputValidationError,
+    LLMStructuredClient,
+    MetadataTranslationError,
+)
 from app.services.validation.validators import (
+    MAX_TITLE_CHARS,
     ValidationIssue,
     ValidationReport,
+    enforce_title_max_length,
     extract_protected_placeholders,
     restore_placeholders,
     validate_localized_metadata,
@@ -58,12 +65,18 @@ class MetadataLocalizerAgent:
         prompt_name: str = "metadata_localizer.translate.v1",
         prompts_dir: Path | None = None,
         max_retries: int = 2,
+        translation_sources: Sequence[MetadataTranslationSource] = ("llm",),
+        google_translator: GoogleMetadataTranslator | None = None,
+        max_title_length: int = MAX_TITLE_CHARS,
     ) -> None:
         self._llm = llm_client
         self._model_name = model_name
         self._prompt_name = prompt_name
         self._prompts_dir = prompts_dir
         self._max_retries = max(0, max_retries)
+        self._translation_sources = list(translation_sources)
+        self._google_translator = google_translator
+        self._max_title_length = min(MAX_TITLE_CHARS, max(20, max_title_length))
 
     async def localize(
         self,
@@ -74,7 +87,72 @@ class MetadataLocalizerAgent:
         target_language: TargetLanguage,
         protected_glossary: Sequence[str] = (),
     ) -> MetadataLocalizationResult:
-        """Localize Turkish metadata into ``target_language`` with retries on invalid output."""
+        """Localize Turkish metadata into ``target_language`` using configured sources."""
+        google_error: str | None = None
+        if (
+            "google_translate" in self._translation_sources
+            and self._google_translator is not None
+            and (
+                "llm" not in self._translation_sources
+                or self._translation_sources.index("google_translate")
+                < self._translation_sources.index("llm")
+            )
+        ):
+            try:
+                gt_title, gt_desc = await self._google_translator.translate_metadata(
+                    source_title=source_title,
+                    source_description=source_description,
+                    source_language=source_language,
+                    target_language=target_language,
+                    protected_glossary=protected_glossary,
+                )
+                gt_report = validate_localized_metadata(
+                    gt_title,
+                    gt_desc,
+                    source_title=source_title,
+                    source_description=source_description,
+                    protected_glossary=protected_glossary,
+                )
+                if gt_report.passed:
+                    return MetadataLocalizationResult(
+                        title=gt_title,
+                        description=gt_desc,
+                        content_hash=compute_metadata_content_hash(gt_title, gt_desc),
+                        provider_used=self._google_translator.provider_name,
+                        prompt_version=self._google_translator.prompt_version,
+                        source_ambiguous=False,
+                        ambiguity_notes=None,
+                        validation_report=gt_report,
+                        attempt_count=1,
+                        last_error=None,
+                    )
+                issue_str = "; ".join(f"{i.code}: {i.message}" for i in gt_report.issues)
+                google_error = f"google_translate validation failed: {issue_str}"
+            except MetadataTranslationError as exc:
+                google_error = str(exc)
+
+            if "llm" not in self._translation_sources:
+                return MetadataLocalizationResult(
+                    title="",
+                    description="",
+                    content_hash=compute_metadata_content_hash("", ""),
+                    provider_used="google_translate",
+                    prompt_version="google_translate.v1",
+                    source_ambiguous=False,
+                    ambiguity_notes=None,
+                    validation_report=ValidationReport(
+                        passed=False,
+                        issues=(
+                            ValidationIssue(
+                                code="google_translate_failed",
+                                message=google_error or "google_translate failed.",
+                            ),
+                        ),
+                    ),
+                    attempt_count=1,
+                    last_error=google_error,
+                )
+
         loaded_prompt = await aload_prompt_template(self._prompt_name, self._prompts_dir)
         bundle = extract_protected_placeholders(
             source_title,
@@ -127,6 +205,17 @@ class MetadataLocalizerAgent:
                 continue
 
             restored_title = restore_placeholders(llm_out.title, bundle).strip()
+            if (
+                len(restored_title) > self._max_title_length
+                and "<" not in restored_title
+                and ">" not in restored_title
+            ):
+                restored_title = enforce_title_max_length(
+                    restored_title,
+                    max_chars=self._max_title_length,
+                    source_title=source_title,
+                    protected_glossary=protected_glossary,
+                )
             restored_desc = restore_placeholders(llm_out.description, bundle).strip()
             report = validate_localized_metadata(
                 restored_title,
@@ -163,6 +252,9 @@ class MetadataLocalizerAgent:
                 f"({issue_descriptions}). Please fix every issue while preserving all "
                 "placeholders and numeric quantities."
             )
+
+        if google_error and last_error:
+            last_error = f"{google_error} | Fallback LLM failed: {last_error}"
 
         if last_report is None:
             last_report = ValidationReport(

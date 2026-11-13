@@ -105,7 +105,7 @@ def extract_protected_placeholders(
             tok = _register("URL", lit)
             if tok not in used:
                 used.append(tok)
-        for tok, lit in list(token_to_literal.items()):
+        for tok, lit in sorted(token_to_literal.items(), key=lambda kv: len(kv[1]), reverse=True):
             if tok.startswith("__URL_") and lit in masked:
                 masked = masked.replace(lit, tok)
 
@@ -115,7 +115,7 @@ def extract_protected_placeholders(
             tok = _register("HANDLE", lit)
             if tok not in used:
                 used.append(tok)
-        for tok, lit in list(token_to_literal.items()):
+        for tok, lit in sorted(token_to_literal.items(), key=lambda kv: len(kv[1]), reverse=True):
             if tok.startswith("__HANDLE_") and lit in masked:
                 masked = masked.replace(lit, tok)
 
@@ -125,7 +125,7 @@ def extract_protected_placeholders(
             tok = _register("HASHTAG", lit)
             if tok not in used:
                 used.append(tok)
-        for tok, lit in list(token_to_literal.items()):
+        for tok, lit in sorted(token_to_literal.items(), key=lambda kv: len(kv[1]), reverse=True):
             if tok.startswith("__HASHTAG_") and lit in masked:
                 masked = masked.replace(lit, tok)
 
@@ -173,6 +173,99 @@ def restore_placeholders(text: str, bundle: PlaceholderBundle) -> str:
 
     restored = re.sub(r"__(?P<kind>[A-Za-z]+)_(?P<idx>\d+)__", _fuzzy_restore, restored)
     return restored
+
+
+_NUMBER_ONE_WORD_RE = re.compile(
+    r"(?i)\b(?:one|un|una|uno|une|ein|eine|einen|einem|um|uma|een|en|ett|"
+    r"jeden|jedna|jedno|jedną|egy|yksi|yhden|üks|ühe|viens|vienu|viena|vienas|vieną|"
+    r"один|одна|одно|одну|един|една|едно|ένα|έναν|μία|një|amháin|einn|einni|eitt|unë|bir)\b"
+)
+
+
+def ensure_source_numbers_in_title(title: str, source_title: str) -> str:
+    """Ensure numeric tokens from ``source_title`` remain as digits in ``title``."""
+    src_nums = extract_numeric_tokens(source_title)
+    if not src_nums:
+        return title
+
+    updated = title
+    tgt_nums = set(extract_numeric_tokens(updated))
+    for num in src_nums:
+        if num in tgt_nums:
+            continue
+        if num == "1" and _NUMBER_ONE_WORD_RE.search(updated):
+            updated = _NUMBER_ONE_WORD_RE.sub("1", updated, count=1)
+            tgt_nums = set(extract_numeric_tokens(updated))
+            if num in tgt_nums:
+                continue
+        updated = f"{updated.rstrip()} ({num})".strip()
+        tgt_nums = set(extract_numeric_tokens(updated))
+    return updated
+
+
+def enforce_title_max_length(
+    title: str,
+    *,
+    max_chars: int = MAX_TITLE_CHARS,
+    source_title: str | None = None,
+    protected_glossary: Sequence[str] = (),
+) -> str:
+    """Guarantee localized title is <= ``max_chars`` (100) while preserving required tokens."""
+    cleaned = " ".join(title.replace("<", "").replace(">", "").split())
+    if source_title is not None:
+        cleaned = ensure_source_numbers_in_title(cleaned, source_title)
+
+    required_literals: list[str] = []
+    if source_title is not None:
+        for url in _URL_PATTERN.findall(source_title):
+            if url not in required_literals:
+                required_literals.append(url)
+        src_no_urls = _URL_PATTERN.sub(" ", source_title)
+        for handle in _HANDLE_PATTERN.findall(src_no_urls):
+            if handle not in required_literals:
+                required_literals.append(handle)
+        for hashtag in _HASHTAG_PATTERN.findall(src_no_urls):
+            if hashtag not in required_literals:
+                required_literals.append(hashtag)
+        for term in protected_glossary:
+            clean_term = term.strip()
+            if clean_term and clean_term in source_title and clean_term not in required_literals:
+                required_literals.append(clean_term)
+
+    for lit in required_literals:
+        if lit not in cleaned:
+            cleaned = f"{cleaned} | {lit}".strip()
+
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    def _trim_to_budget(text: str, budget: int) -> str:
+        if len(text) <= budget:
+            return text.rstrip(" ,;:-–—(/|")
+        cut_idx = text.rfind(" ", 0, budget + 1)
+        candidate = text[:cut_idx] if cut_idx >= max(15, budget // 2) else text[:budget]
+        return candidate.rstrip(" ,;:-–—(/|")
+
+    draft = _trim_to_budget(cleaned, max_chars)
+
+    lost_items: list[str] = []
+    for lit in required_literals:
+        if lit not in draft:
+            lost_items.append(lit)
+    if source_title is not None:
+        draft_nums = set(extract_numeric_tokens(draft))
+        for num in extract_numeric_tokens(source_title):
+            if num not in draft_nums and num not in lost_items:
+                lost_items.append(num)
+
+    if lost_items:
+        suffix = " " + " ".join(lost_items)
+        prefix_budget = max(1, max_chars - len(suffix))
+        draft = _trim_to_budget(cleaned, prefix_budget) + suffix
+
+    if len(draft) > max_chars:
+        draft = draft[:max_chars].rstrip()
+    return draft
 
 
 def validate_language_code(

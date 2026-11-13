@@ -150,6 +150,22 @@ class VideoLocalizationUpdateRequest(BaseModel):
         }
 
 
+_LANGUAGE_ALIAS_GROUPS: dict[str, frozenset[str]] = {
+    "he": frozenset({"he", "iw"}),
+    "iw": frozenset({"he", "iw"}),
+    "id": frozenset({"id", "in"}),
+    "in": frozenset({"id", "in"}),
+    "yi": frozenset({"yi", "ji"}),
+    "ji": frozenset({"yi", "ji"}),
+}
+
+
+def language_code_aliases(language: str) -> frozenset[str]:
+    """Return lowercase equivalent BCP-47/legacy language codes (e.g. ``he`` <-> ``iw``)."""
+    lowered = language.strip().lower()
+    return _LANGUAGE_ALIAS_GROUPS.get(lowered, frozenset({lowered}))
+
+
 def build_video_localization_update_request(
     *,
     current_video: YouTubeVideoResource,
@@ -162,8 +178,9 @@ def build_video_localization_update_request(
 ) -> VideoLocalizationUpdateRequest:
     """Build a safe read-merge-write `videos.update` request that preserves existing metadata."""
     lang = target_language.strip()
+    aliases = language_code_aliases(lang)
     existing_lower_map = {k.lower(): k for k in current_video.localizations}
-    if lang.lower() in existing_lower_map and not allow_overwrite_existing_localization:
+    if any(a in existing_lower_map for a in aliases) and not allow_overwrite_existing_localization:
         raise ValueError(
             f"Target localization {lang!r} already exists on YouTube video "
             f"{current_video.video_id!r}; refusing to overwrite without explicit authorization."
@@ -172,6 +189,7 @@ def build_video_localization_update_request(
     merged_localizations: dict[str, dict[str, str]] = {
         k: {"title": v.get("title", ""), "description": v.get("description", "")}
         for k, v in current_video.localizations.items()
+        if k.lower() not in aliases
     }
     merged_localizations[lang] = {
         "title": translated_title,
@@ -433,31 +451,51 @@ class HttpYouTubeDataClient:
     async def list_upload_video_ids(
         self, uploads_playlist_id: str, *, max_results: int = 20
     ) -> list[str]:
-        self.quota_units_used += QUOTA_PLAYLIST_ITEMS_LIST
-        bounded = max(1, min(max_results, 50))
-        payload = await self._get_json(
-            "playlistItems",
-            {
+        target_total = max(1, min(max_results, 500))
+        collected: list[str] = []
+        page_token: str | None = None
+
+        while len(collected) < target_total:
+            page_size = min(50, target_total - len(collected))
+            params: dict[str, str] = {
                 "part": "snippet,contentDetails",
                 "playlistId": uploads_playlist_id,
-                "maxResults": str(bounded),
-            },
-        )
-        return parse_playlist_items_video_ids(payload)
+                "maxResults": str(page_size),
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            self.quota_units_used += QUOTA_PLAYLIST_ITEMS_LIST
+            payload = await self._get_json("playlistItems", params)
+            page_ids = parse_playlist_items_video_ids(payload)
+            for vid in page_ids:
+                if vid not in collected:
+                    collected.append(vid)
+                    if len(collected) >= target_total:
+                        break
+            next_token = payload.get("nextPageToken")
+            if not isinstance(next_token, str) or not next_token.strip() or not page_ids:
+                break
+            page_token = next_token.strip()
+
+        return collected
 
     async def get_videos(self, video_ids: list[str]) -> list[YouTubeVideoResource]:
         cleaned = [v.strip() for v in video_ids if v.strip()]
         if not cleaned:
             return []
-        self.quota_units_used += QUOTA_VIDEOS_LIST
-        payload = await self._get_json(
-            "videos",
-            {
-                "part": "snippet,status,localizations",
-                "id": ",".join(cleaned[:50]),
-            },
-        )
-        return parse_videos_list_response(payload)
+        results: list[YouTubeVideoResource] = []
+        for start in range(0, len(cleaned), 50):
+            chunk = cleaned[start : start + 50]
+            self.quota_units_used += QUOTA_VIDEOS_LIST
+            payload = await self._get_json(
+                "videos",
+                {
+                    "part": "snippet,status,localizations",
+                    "id": ",".join(chunk),
+                },
+            )
+            results.extend(parse_videos_list_response(payload))
+        return results
 
     async def update_video_localizations(
         self,

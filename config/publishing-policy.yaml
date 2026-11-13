@@ -44,12 +44,14 @@ captions:
   # Only "skip_and_report" is supported: existing tracks are never deleted or
   # overwritten without an explicit, per-track authorization in the dashboard.
   existing_track_strategy: skip_and_report
-  # Preferred source of translated subtitles, in order. "llm" uses the configured
-  # LLM translation provider (0 YouTube quota units per target language), and
-  # "youtube_native" uses captions.download?tlang=... (200 YouTube quota units/lang).
+  # Preferred source of translated subtitles, in order:
+  # 1. "google_translate" runs first (0 YouTube API quota, preserving quota for publishing)
+  # 2. "youtube_native" uses captions.download?tlang=... (200 YouTube quota units/lang) as fallback
+  # 3. "llm" uses the configured Gemini LLM provider if both Google Translate and YouTube fail
   translation_sources:
-    - llm
+    - google_translate
     - youtube_native
+    - llm
   # Maximum characters per single subtitle line before flagging a line-length issue.
   max_line_length: 84
   # Maximum number of subtitle cues translated per LLM batch call.
@@ -58,6 +60,16 @@ captions:
 metadata:
   # What to do when a localization (title/description) already exists.
   existing_localization_strategy: skip_and_report
+  # Preferred source of translated titles & descriptions, in order:
+  # 1. "google_translate" runs first (0 YouTube API quota, 0 LLM credits)
+  # 2. "youtube_native" (if applicable)
+  # 3. "llm" (Gemini) as fallback
+  translation_sources:
+    - google_translate
+    - youtube_native
+    - llm
+  # Maximum characters allowed for localized YouTube titles (YouTube API limit is 100).
+  max_title_length: 100
 
 llm:
   # Provider used for metadata localization, fallback caption translation, and quality review.

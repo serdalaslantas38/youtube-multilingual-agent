@@ -62,7 +62,7 @@ export const dashboardApi = {
   listVideos(): Promise<DiscoveredVideoSummary[]> {
     return requestJson<DiscoveredVideoSummary[]>("/api/videos");
   },
-  discoverVideos(maxResults = 10): Promise<{
+  discoverVideos(maxResults = 50): Promise<{
     channel_id: string;
     discovered_count: number;
     videos: DiscoveredVideoSummary[];
@@ -70,6 +70,12 @@ export const dashboardApi = {
   }> {
     return requestJson(`/api/videos/discover?max_results=${maxResults}`, {
       method: "POST",
+    });
+  },
+  importVideo(videoUrlOrId: string): Promise<DiscoveredVideoSummary> {
+    return requestJson<DiscoveredVideoSummary>("/api/videos/import", {
+      method: "POST",
+      body: JSON.stringify({ video_url_or_id: videoUrlOrId }),
     });
   },
   inspectVideoCaptions(youtubeVideoId: string): Promise<unknown> {

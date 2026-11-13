@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.core.app_config import AppConfig
+from app.core.app_config import AppConfig, aload_app_config
 from app.core.settings import Settings
 from app.models.entities import LanguageAsset, Video
 from app.orchestration.localization import _asset_to_summary, localize_video_assets
@@ -30,9 +30,10 @@ from app.services.validation.validators import (
     SourceCaptionCandidate,
     evaluate_source_caption_tracks,
 )
-from app.services.youtube.captions_client import YouTubeCaptionClient
+from app.services.youtube.captions_client import YouTubeApiError, YouTubeCaptionClient
 from app.services.youtube.discovery import (
     ChannelNotConnectedError,
+    inspect_and_persist_video_captions,
     mint_access_token_for_channel,
 )
 from app.services.youtube.oauth import OAuthTokenClient
@@ -130,9 +131,11 @@ async def localize_video_endpoint(
     """Run Stage 5 localization, fallback caption translation, validation, and review."""
     req = body or LocalizeVideoRequest()
     settings: Settings = request.app.state.settings
+    llm_client: LLMStructuredClient | None = getattr(request.app.state, "llm_client", None)
+    if llm_client is None:
+        request.app.state.app_config = await aload_app_config(settings.config_dir)
     app_cfg: AppConfig = request.app.state.app_config
     session_factory = _get_session_factory(request)
-    llm_client: LLMStructuredClient | None = getattr(request.app.state, "llm_client", None)
     injected_caption_client: YouTubeCaptionClient | None = getattr(
         request.app.state, "caption_client", None
     )
@@ -147,7 +150,27 @@ async def localize_video_endpoint(
                     settings=settings,
                     token_client=_get_token_client(request),
                 )
-                caption_client = _build_yt_client(request, access_token)
+                yt_ro_client = _build_yt_client(request, access_token)
+                caption_client = yt_ro_client
+                vid_stmt = (
+                    select(Video)
+                    .options(selectinload(Video.source_captions))
+                    .where(Video.youtube_video_id == youtube_video_id)
+                )
+                vid_row = (await session.execute(vid_stmt)).scalar_one_or_none()
+                if vid_row is not None and not vid_row.source_captions:
+                    try:
+                        await inspect_and_persist_video_captions(
+                            session,
+                            yt_client=yt_ro_client,
+                            youtube_video_id=youtube_video_id,
+                            source_language=effective_cfg.languages.source_language.code,
+                        )
+                        await session.flush()
+                        # Force the localizer's selectinload to pick up newly inspected tracks.
+                        session.expire(vid_row, ["source_captions"])
+                    except YouTubeApiError:
+                        pass
             except ChannelNotConnectedError:
                 caption_client = None
 

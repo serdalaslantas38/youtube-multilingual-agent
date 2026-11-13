@@ -30,7 +30,10 @@ from app.services.captions.parser import (
 from app.services.captions.translator import SubtitleTranslationService
 from app.services.translation.providers import (
     FakeStructuredLLMClient,
+    GoogleCaptionTranslator,
+    GoogleMetadataTranslator,
     LLMOutputValidationError,
+    MetadataTranslationError,
 )
 from app.services.validation.validators import (
     extract_protected_placeholders,
@@ -242,29 +245,14 @@ async def test_subtitle_service_repairs_tlang_empty_cues_and_falls_back_on_error
 
     fake_llm = FakeStructuredLLMClient()
 
-    # Default policy is LLM-first (0 YouTube quota units per target language)
-    assert cfg.policy.captions.translation_sources == ["llm", "youtube_native"]
-    llm_first_service = SubtitleTranslationService(
-        translation_sources=cfg.policy.captions.translation_sources,
-        llm_client=fake_llm,
-        model_name=cfg.policy.llm.model_name,
-        caption_client=mock_yt,
-        max_line_length=84,
-    )
-    llm_first_res = await llm_first_service.translate(
-        source_caption_id="cap-tr-std",
-        source_cues=src_doc.cues,
-        target_language=en_target,
-        source_language=cfg.languages.source_language,
-        protected_glossary=cfg.languages.protected_glossary,
-    )
-    assert llm_first_res.parsed_doc.is_valid is True
-    assert llm_first_res.provider_used == "fake"
-    assert llm_first_res.quota_units_used == 0
-
-    # Also verify youtube_native -> llm repair and fallback order
+    # Default policy is Google Translate first, then 'youtube_native', then 'llm'
+    assert cfg.policy.captions.translation_sources == [
+        "google_translate",
+        "youtube_native",
+        "llm",
+    ]
     service = SubtitleTranslationService(
-        translation_sources=["youtube_native", "llm"],
+        translation_sources=cfg.policy.captions.translation_sources,
         llm_client=fake_llm,
         model_name=cfg.policy.llm.model_name,
         caption_client=mock_yt,
@@ -299,6 +287,47 @@ async def test_subtitle_service_repairs_tlang_empty_cues_and_falls_back_on_error
     assert ro_res.prompt_version == "caption_translator.translate.v1"
     # 200 units were spent on the failed youtube_native attempt before LLM fallback
     assert ro_res.quota_units_used == 200
+
+    # 3. When YouTube quota is reached (HTTP 403 quotaExceeded), switch to LLM and
+    # skip further youtube_native attempts in the same batch (0 extra YouTube quota wasted)
+    es_target = cfg.languages.get("es")
+    fr_target = cfg.languages.get("fr")
+    assert es_target is not None and fr_target is not None
+    mock_yt.register_download(
+        "cap-tr-std",
+        parse_youtube_api_error(
+            403,
+            {
+                "error": {
+                    "code": 403,
+                    "message": "The request cannot be completed: quotaExceeded.",
+                    "errors": [{"reason": "quotaExceeded"}],
+                }
+            },
+        ),
+        tfmt="srt",
+        tlang="es",
+    )
+    es_res = await service.translate(
+        source_caption_id="cap-tr-std",
+        source_cues=src_doc.cues,
+        target_language=es_target,
+        source_language=cfg.languages.source_language,
+        protected_glossary=cfg.languages.protected_glossary,
+    )
+    assert es_res.provider_used == "fake"
+    assert es_res.quota_units_used == 200
+
+    # Subsequent language ('fr') immediately uses LLM without hitting YouTube API again
+    fr_res = await service.translate(
+        source_caption_id="cap-tr-std",
+        source_cues=src_doc.cues,
+        target_language=fr_target,
+        source_language=cfg.languages.source_language,
+        protected_glossary=cfg.languages.protected_glossary,
+    )
+    assert fr_res.provider_used == "fake"
+    assert fr_res.quota_units_used == 0
 
 
 async def test_metadata_agent_retries_on_invalid_llm_output_then_succeeds(
@@ -440,6 +469,179 @@ def test_prompt_loader_rejects_secrets_and_invalid_names() -> None:
         rep = validate_language_code("bad code!")
         if not rep.passed:
             raise ValueError(rep.issues[0].message)
+
+
+async def test_google_translate_first_for_metadata_and_100_char_title_limit(
+    config_dir: Path,
+) -> None:
+    cfg = load_app_config(config_dir)
+    assert cfg.policy.metadata.translation_sources == [
+        "google_translate",
+        "youtube_native",
+        "llm",
+    ]
+    assert cfg.policy.metadata.max_title_length == 100
+
+    de_target = cfg.languages.get("de")
+    assert de_target is not None
+
+    # Simulate Google Translate expanding the title well beyond 100 characters and
+    # turning the digit "1" into the word "Ein"
+    async def _verbose_google_translate(text: str, sl: str, tl: str) -> str:
+        assert sl == "tr"
+        assert tl == "de"
+        lines = text.split("\n")
+        out: list[str] = []
+        for idx, line in enumerate(lines):
+            if idx == 0:
+                out.append(
+                    "Nur Ein Esslöffel sorgt dafür, dass die blütenlose Orchidee das ganze "
+                    "Jahr über ununterbrochen wunderschön und reichlich blüht"
+                )
+            else:
+                out.append(f"[DE] {line}")
+        return "\n".join(out)
+
+    google_translator = GoogleMetadataTranslator(
+        max_title_length=100,
+        translate_fn=_verbose_google_translate,
+    )
+    fake_llm = FakeStructuredLLMClient()
+    agent = MetadataLocalizerAgent(
+        llm_client=fake_llm,
+        model_name=cfg.policy.llm.model_name,
+        translation_sources=cfg.policy.metadata.translation_sources,
+        google_translator=google_translator,
+        max_title_length=100,
+    )
+    res = await agent.localize(
+        source_title=GOLDEN_TURKISH_TITLE,
+        source_description=GOLDEN_TURKISH_DESCRIPTION,
+        source_language=cfg.languages.source_language,
+        target_language=de_target,
+        protected_glossary=cfg.languages.protected_glossary,
+    )
+    assert res.validation_report.passed is True
+    assert res.provider_used == "google_translate"
+    assert res.prompt_version == "google_translate.v1"
+    assert len(res.title) <= 100
+    assert "1" in res.title
+    assert "HayataDairPüfNoktalar" in res.title
+    assert "https://www.youtube.com/@orchidhacks" in res.description
+    assert len(fake_llm.calls) == 0
+
+    # Also verify automatic fallback to LLM if google_translate fails
+    async def _failing_google_translate(text: str, sl: str, tl: str) -> str:
+        del text, sl, tl
+        raise MetadataTranslationError("Google Translate unavailable")
+
+    fallback_agent = MetadataLocalizerAgent(
+        llm_client=fake_llm,
+        model_name=cfg.policy.llm.model_name,
+        translation_sources=["google_translate", "llm"],
+        google_translator=GoogleMetadataTranslator(translate_fn=_failing_google_translate),
+        max_title_length=100,
+    )
+    fallback_res = await fallback_agent.localize(
+        source_title=GOLDEN_TURKISH_TITLE,
+        source_description=GOLDEN_TURKISH_DESCRIPTION,
+        source_language=cfg.languages.source_language,
+        target_language=de_target,
+        protected_glossary=cfg.languages.protected_glossary,
+    )
+    assert fallback_res.validation_report.passed is True
+    assert fallback_res.provider_used == "fake"
+    assert len(fallback_res.title) <= 100
+
+
+async def test_subtitle_chain_google_then_youtube_then_llm_switches_uninterrupted(
+    config_dir: Path,
+) -> None:
+    """Google Translate (0 YT quota) -> YouTube native -> LLM, switching uninterrupted."""
+    cfg = load_app_config(config_dir)
+    assert cfg.policy.captions.translation_sources == [
+        "google_translate",
+        "youtube_native",
+        "llm",
+    ]
+    assert cfg.policy.metadata.translation_sources == [
+        "google_translate",
+        "youtube_native",
+        "llm",
+    ]
+    src_doc = parse_and_validate_subtitles(GOLDEN_TURKISH_SRT, SubtitleFormat.SRT)
+    assert src_doc.is_valid
+    en_t, es_t, fr_t, de_t = (cfg.languages.get(c) for c in ("en", "es", "fr", "de"))
+    assert en_t and es_t and fr_t and de_t
+
+    mock_yt = MockYouTubeCaptionClient()
+    mock_yt.register_download(
+        "cap-tr-std",
+        GOLDEN_TURKISH_SRT.encode("utf-8"),
+        tfmt="srt",
+        tlang="es",
+    )
+    mock_yt.register_download(
+        "cap-tr-std",
+        parse_youtube_api_error(
+            403,
+            {"error": {"code": 403, "message": "quota", "errors": [{"reason": "quotaExceeded"}]}},
+        ),
+        tfmt="srt",
+        tlang="fr",
+    )
+
+    google_calls: list[str] = []
+    google_rate_limited = {"on": False}
+
+    async def _google(text: str, sl: str, tl: str) -> str:
+        google_calls.append(tl)
+        if google_rate_limited["on"]:
+            raise MetadataTranslationError("Google Translate request failed: HTTP 429 Too Many")
+        return "\n".join(f"[{tl.upper()}] {line}" for line in text.split("\n"))
+
+    service = SubtitleTranslationService(
+        translation_sources=cfg.policy.captions.translation_sources,
+        llm_client=FakeStructuredLLMClient(),
+        model_name=cfg.policy.llm.model_name,
+        caption_client=mock_yt,
+        max_line_length=84,
+        google_translator=GoogleCaptionTranslator(translate_fn=_google),
+    )
+
+    async def _run(target: object) -> object:
+        return await service.translate(
+            source_caption_id="cap-tr-std",
+            source_cues=src_doc.cues,
+            target_language=target,  # type: ignore[arg-type]
+            source_language=cfg.languages.source_language,
+            protected_glossary=cfg.languages.protected_glossary,
+        )
+
+    # 1. 'en': Google Translate runs first -> 0 YouTube quota units spent!
+    en_res = await _run(en_t)
+    assert en_res.provider_used == "google_translate"  # type: ignore[attr-defined]
+    assert en_res.quota_units_used == 0  # type: ignore[attr-defined]
+    assert en_res.parsed_doc.is_valid  # type: ignore[attr-defined]
+
+    # 2. 'es': Google hits rate limit -> seamlessly falls back to YouTube native (200 units)
+    google_rate_limited["on"] = True
+    es_res = await _run(es_t)
+    assert es_res.provider_used == "youtube_native"  # type: ignore[attr-defined]
+    assert es_res.quota_units_used == 200  # type: ignore[attr-defined]
+    calls_after_es = len(google_calls)
+
+    # 3. 'fr': Google is skipped (already rate-limited); YouTube hits quota -> falls back to LLM
+    fr_res = await _run(fr_t)
+    assert fr_res.provider_used == "fake"  # type: ignore[attr-defined]
+    assert fr_res.quota_units_used == 200  # type: ignore[attr-defined]
+    assert len(google_calls) == calls_after_es
+
+    # 4. 'de': both Google and YouTube are skipped; goes straight to LLM (0 YT quota units)
+    de_res = await _run(de_t)
+    assert de_res.provider_used == "fake"  # type: ignore[attr-defined]
+    assert de_res.quota_units_used == 0  # type: ignore[attr-defined]
+    assert len(google_calls) == calls_after_es
 
 
 def test_app_main_imports_cleanly_without_circular_imports() -> None:

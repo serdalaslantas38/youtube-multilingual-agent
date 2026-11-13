@@ -86,11 +86,11 @@ class GlobalPolicy(_Strict):
     auto_publish_enabled: bool = False
 
 
-TranslationSource = Literal["youtube_native", "llm"]
+TranslationSource = Literal["youtube_native", "google_translate", "llm"]
 
 
 def _default_translation_sources() -> list[TranslationSource]:
-    return ["llm", "youtube_native"]
+    return ["google_translate", "youtube_native", "llm"]
 
 
 class CaptionPolicy(_Strict):
@@ -102,8 +102,19 @@ class CaptionPolicy(_Strict):
     llm_batch_size: int = Field(default=40, ge=1, le=200)
 
 
+MetadataTranslationSource = Literal["google_translate", "youtube_native", "llm"]
+
+
+def _default_metadata_translation_sources() -> list[MetadataTranslationSource]:
+    return ["google_translate", "youtube_native", "llm"]
+
+
 class MetadataPolicy(_Strict):
     existing_localization_strategy: Literal["skip_and_report"] = "skip_and_report"
+    translation_sources: list[MetadataTranslationSource] = Field(
+        default_factory=_default_metadata_translation_sources, min_length=1
+    )
+    max_title_length: int = Field(default=100, ge=20, le=100)
 
 
 class LLMPolicy(_Strict):

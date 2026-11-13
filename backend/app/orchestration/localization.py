@@ -37,11 +37,13 @@ from app.schemas.localization import LanguageAssetSummary, VideoLocalizationResp
 from app.services.captions.parser import (
     SubtitleCue,
     SubtitleFormat,
+    normalize_source_srt,
     parse_and_validate_subtitles,
 )
 from app.services.captions.translator import SubtitleTranslationService
 from app.services.translation.providers import (
     CaptionTranslationError,
+    GoogleMetadataTranslator,
     LLMStructuredClient,
     create_llm_structured_client,
 )
@@ -146,14 +148,20 @@ async def _ensure_source_caption_cues(
             track_row.download_error = f"{exc.reason} (HTTP {exc.http_status})"
             return (), quota_used, track_row.download_error
 
-        parsed_src = parse_and_validate_subtitles(raw_bytes, SubtitleFormat.SRT)
-        if not parsed_src.is_valid:
-            codes = [i.code for i in parsed_src.report.issues]
-            track_row.is_downloadable = False
-            track_row.download_error = f"Source subtitle validation failed: {codes}"
-            return (), quota_used, track_row.download_error
-
         decoded_text = raw_bytes.decode("utf-8-sig")
+        parsed_src = parse_and_validate_subtitles(decoded_text, SubtitleFormat.SRT)
+        if not parsed_src.is_valid:
+            repaired_text = normalize_source_srt(raw_bytes)
+            repaired_doc = parse_and_validate_subtitles(repaired_text, SubtitleFormat.SRT)
+            if repaired_doc.is_valid:
+                decoded_text = repaired_text
+                parsed_src = repaired_doc
+            else:
+                codes = [i.code for i in parsed_src.report.issues]
+                track_row.is_downloadable = False
+                track_row.download_error = f"Source subtitle validation failed: {codes}"
+                return (), quota_used, track_row.download_error
+
         track_row.raw_content = decoded_text
         track_row.content_format = "srt"
         track_row.content_hash = parsed_src.content_hash
@@ -164,6 +172,15 @@ async def _ensure_source_caption_cues(
 
     parsed_cached = parse_and_validate_subtitles(raw_srt, SubtitleFormat.SRT)
     if not parsed_cached.is_valid:
+        repaired_cached = normalize_source_srt(raw_srt)
+        repaired_cached_doc = parse_and_validate_subtitles(repaired_cached, SubtitleFormat.SRT)
+        if repaired_cached_doc.is_valid:
+            track_row.raw_content = repaired_cached
+            track_row.content_hash = repaired_cached_doc.content_hash
+            track_row.cue_count = len(repaired_cached_doc.cues)
+            track_row.is_downloadable = True
+            track_row.download_error = None
+            return repaired_cached_doc.cues, 0, None
         codes = [i.code for i in parsed_cached.report.issues]
         return (), 0, f"Cached source subtitle failed validation: {codes}"
     return parsed_cached.cues, 0, None
@@ -247,12 +264,22 @@ async def localize_video_assets(
         location=settings.google_cloud_location,
     )
 
+    google_translator = (
+        GoogleMetadataTranslator(
+            max_title_length=app_config.policy.metadata.max_title_length,
+        )
+        if active_llm_client.provider_name != "fake"
+        else None
+    )
     metadata_agent = MetadataLocalizerAgent(
         llm_client=active_llm_client,
         model_name=model_name,
         prompt_name=app_config.policy.llm.metadata_prompt_name,
         prompts_dir=settings.prompts_dir,
         max_retries=app_config.policy.llm.max_output_retries,
+        translation_sources=app_config.policy.metadata.translation_sources,
+        google_translator=google_translator,
+        max_title_length=app_config.policy.metadata.max_title_length,
     )
     reviewer_agent = QualityReviewerAgent(
         llm_client=active_llm_client,
@@ -364,15 +391,23 @@ async def localize_video_assets(
 
                 if meta_res.validation_report.passed and not meta_res.source_ambiguous:
                     meta_asset.state = AssetState.REVIEWING
-                    rev_res = await reviewer_agent.review_metadata(
-                        source_title=video.source_title,
-                        source_description=video.source_description,
-                        translated_title=meta_res.title,
-                        translated_description=meta_res.description,
-                        source_language=app_config.languages.source_language,
-                        target_language=target_lang,
-                        protected_glossary=app_config.languages.protected_glossary,
-                    )
+                    if meta_res.provider_used == "google_translate":
+                        rev_res = reviewer_agent.review_metadata_deterministic(
+                            source_title=video.source_title,
+                            source_description=video.source_description,
+                            translated_title=meta_res.title,
+                            translated_description=meta_res.description,
+                        )
+                    else:
+                        rev_res = await reviewer_agent.review_metadata(
+                            source_title=video.source_title,
+                            source_description=video.source_description,
+                            translated_title=meta_res.title,
+                            translated_description=meta_res.description,
+                            source_language=app_config.languages.source_language,
+                            target_language=target_lang,
+                            protected_glossary=app_config.languages.protected_glossary,
+                        )
                     meta_asset.review_passed = rev_res.passed
                     meta_asset.source_ambiguous = rev_res.source_ambiguous
                     meta_asset.review_report = rev_res.to_dict()
@@ -487,13 +522,22 @@ async def localize_video_assets(
 
                     if cap_res.parsed_doc.is_valid and not cap_res.source_ambiguous:
                         cap_asset.state = AssetState.REVIEWING
-                        rev_res = await reviewer_agent.review_captions(
-                            source_cues=source_cues,
-                            translated_cues=cap_res.parsed_doc.cues,
-                            source_language=app_config.languages.source_language,
-                            target_language=target_lang,
-                            protected_glossary=app_config.languages.protected_glossary,
-                        )
+                        if cap_res.provider_used == "google_translate" or (
+                            active_llm_client.provider_name != "fake"
+                            and cap_res.provider_used.startswith("youtube_native")
+                        ):
+                            rev_res = reviewer_agent.review_captions_deterministic(
+                                source_cues=source_cues,
+                                translated_cues=cap_res.parsed_doc.cues,
+                            )
+                        else:
+                            rev_res = await reviewer_agent.review_captions(
+                                source_cues=source_cues,
+                                translated_cues=cap_res.parsed_doc.cues,
+                                source_language=app_config.languages.source_language,
+                                target_language=target_lang,
+                                protected_glossary=app_config.languages.protected_glossary,
+                            )
                         cap_asset.review_passed = rev_res.passed
                         cap_asset.source_ambiguous = rev_res.source_ambiguous
                         cap_asset.review_report = rev_res.to_dict()

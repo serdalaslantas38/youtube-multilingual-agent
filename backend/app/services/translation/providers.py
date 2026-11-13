@@ -10,11 +10,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.app_config import SourceLanguage, TargetLanguage
@@ -32,6 +33,14 @@ from app.services.captions.parser import (
     normalize_youtube_tlang_srt,
     parse_and_validate_subtitles,
     serialize_subtitles_to_srt,
+)
+from app.services.validation.validators import (
+    MAX_DESCRIPTION_BYTES,
+    MAX_TITLE_CHARS,
+    PlaceholderBundle,
+    enforce_title_max_length,
+    extract_protected_placeholders,
+    restore_placeholders,
 )
 from app.services.youtube.captions_client import (
     CaptionDownloadFormat,
@@ -508,9 +517,11 @@ class YouTubeNativeCaptionTranslator:
         *,
         caption_client: YouTubeCaptionClient,
         llm_repair_translator: LLMCaptionTranslator | None = None,
+        google_repair_translator: GoogleCaptionTranslator | None = None,
     ) -> None:
         self._caption_client = caption_client
         self._llm_repair = llm_repair_translator
+        self._google_repair = google_repair_translator
 
     async def translate_captions(
         self,
@@ -545,37 +556,71 @@ class YouTubeNativeCaptionTranslator:
         provider_label = "youtube_native"
 
         # If YouTube's tlang merged adjacent cues and left a few cues empty, backfill
-        # just those empty cues using the LLM translator while preserving all other native cues.
+        # just those empty cues (Google Translate first, then LLM) keeping all other native cues.
         if (
             empty_indices
-            and self._llm_repair is not None
+            and (self._google_repair is not None or self._llm_repair is not None)
             and len(empty_indices) <= max(3, len(source_cues) // 4)
         ):
             empty_set = set(empty_indices)
             missing_source_cues = [c for c in source_cues if c.index in empty_set]
             if missing_source_cues:
-                repaired_map, _, _, _, prompt_ver = await self._llm_repair.translate_cue_subset(
-                    cues_to_translate=missing_source_cues,
-                    target_language=target_language,
-                    source_language=source_language,
-                    protected_glossary=protected_glossary,
-                    max_line_length=max_line_length,
-                )
-                # Inject repaired cue texts into the normalized SRT blocks
-                blocks = normalized_srt.strip().split("\n\n")
-                patched_blocks: list[str] = []
-                for block in blocks:
-                    lines = block.split("\n")
-                    if len(lines) >= 2 and lines[0].strip().isdigit():
-                        cue_idx = int(lines[0].strip())
-                        if cue_idx in repaired_map:
-                            patched_blocks.append(
-                                f"{lines[0].strip()}\n{lines[1].strip()}\n{repaired_map[cue_idx]}"
-                            )
-                            continue
-                    patched_blocks.append(block)
-                normalized_srt = "\n\n".join(patched_blocks) + "\n"
-                provider_label = f"youtube_native+{self._llm_repair.provider_name}_repair"
+                repaired_map: dict[int, str] | None = None
+                repair_provider_name = ""
+                if self._google_repair is not None:
+                    try:
+                        (
+                            repaired_map,
+                            _,
+                            _,
+                            _,
+                            prompt_ver,
+                        ) = await self._google_repair.translate_cue_subset(
+                            cues_to_translate=missing_source_cues,
+                            target_language=target_language,
+                            source_language=source_language,
+                            protected_glossary=protected_glossary,
+                            max_line_length=max_line_length,
+                        )
+                        repair_provider_name = self._google_repair.provider_name
+                    except CaptionTranslationError:
+                        repaired_map = None
+                if repaired_map is None and self._llm_repair is not None:
+                    try:
+                        (
+                            repaired_map,
+                            _,
+                            _,
+                            _,
+                            prompt_ver,
+                        ) = await self._llm_repair.translate_cue_subset(
+                            cues_to_translate=missing_source_cues,
+                            target_language=target_language,
+                            source_language=source_language,
+                            protected_glossary=protected_glossary,
+                            max_line_length=max_line_length,
+                        )
+                        repair_provider_name = self._llm_repair.provider_name
+                    except CaptionTranslationError:
+                        # LLM credits/quota unavailable: leave cues empty so validation fails
+                        # below (reporting the 200 units spent) and the service falls back.
+                        repaired_map = None
+                if repaired_map is not None:
+                    # Inject repaired cue texts into the normalized SRT blocks
+                    blocks = normalized_srt.strip().split("\n\n")
+                    patched_blocks: list[str] = []
+                    for block in blocks:
+                        lines = block.split("\n")
+                        if len(lines) >= 2 and lines[0].strip().isdigit():
+                            cue_idx = int(lines[0].strip())
+                            if cue_idx in repaired_map:
+                                patched_blocks.append(
+                                    f"{lines[0].strip()}\n{lines[1].strip()}\n{repaired_map[cue_idx]}"
+                                )
+                                continue
+                        patched_blocks.append(block)
+                    normalized_srt = "\n\n".join(patched_blocks) + "\n"
+                    provider_label = f"youtube_native+{repair_provider_name}_repair"
 
         # Soft-wrap any lines in YouTube's native output that exceed max_line_length
         prelim_doc = parse_and_validate_subtitles(
@@ -643,15 +688,593 @@ def create_llm_structured_client(
     raise ValueError(f"Unknown LLM provider {provider_name!r}; expected 'gemini' or 'fake'.")
 
 
+class MetadataTranslationError(RuntimeError):
+    """Raised when a metadata translation provider fails to translate title/description."""
+
+
+_PLACEHOLDER_TOKEN_RE = re.compile(r"(__[A-Z]+_\d+__)")
+
+
+class GoogleMetadataTranslator:
+    """Translates video title & description via Google Translate while preserving placeholders.
+
+    Never sends URLs, @handles, #hashtags, or protected glossary literals over the wire:
+    only plain-text segments between placeholders are translated, and the localized title
+    is deterministically constrained to ``<= max_title_length`` (100 characters).
+    """
+
+    provider_name = "google_translate"
+    prompt_version = "google_translate.v1"
+
+    _BATCHEXECUTE_URLS: tuple[str, ...] = (
+        "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute",
+        "https://translate.google.co.uk/_/TranslateWebserverUi/data/batchexecute",
+        "https://translate.google.de/_/TranslateWebserverUi/data/batchexecute",
+        "https://translate.google.fr/_/TranslateWebserverUi/data/batchexecute",
+        "https://translate.google.ca/_/TranslateWebserverUi/data/batchexecute",
+        "https://translate.google.com.tr/_/TranslateWebserverUi/data/batchexecute",
+    )
+    _SINGLE_URLS: tuple[str, ...] = (
+        "https://translate.googleapis.com/translate_a/single",
+        "https://translate.google.com/translate_a/single",
+        "https://clients5.google.com/translate_a/single",
+    )
+    _CLIENT_PROFILES: tuple[str, ...] = ("at", "it", "gtx")
+    _USER_AGENT: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    )
+
+    def __init__(
+        self,
+        *,
+        max_title_length: int = MAX_TITLE_CHARS,
+        translate_fn: Callable[[str, str, str], Awaitable[str]] | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> None:
+        self._max_title_length = min(MAX_TITLE_CHARS, max(20, max_title_length))
+        self._translate_fn = translate_fn
+        self._timeout = timeout_seconds
+        self._preferred_client_idx = 0
+        self._rpc_host_cursor = 0
+
+    @staticmethod
+    def resolve_google_lang_code(target_language: TargetLanguage) -> str:
+        code = target_language.code.strip()
+        if code == "zh":
+            return "zh-CN"
+        if code == "pt-PT":
+            return "pt-PT"
+        return target_language.caption_tlang or code
+
+    @staticmethod
+    def _parse_batchexecute_response(raw_text: str) -> dict[int, str]:
+        """Parse Google Translate ``batchexecute`` (``MkEWBc``) multi-RPC response."""
+        results: dict[int, str] = {}
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("[["):
+                continue
+            try:
+                outer = json.loads(stripped)
+            except ValueError:
+                continue
+            if not isinstance(outer, list):
+                continue
+            for item in outer:
+                if (
+                    not isinstance(item, list)
+                    or len(item) < 7
+                    or item[0] != "wrb.fr"
+                    or item[1] != "MkEWBc"
+                    or not isinstance(item[2], str)
+                ):
+                    continue
+                call_id_str = str(item[6])
+                if not call_id_str.isdigit():
+                    continue
+                try:
+                    inner = json.loads(item[2])
+                    sents = inner[1][0][0][5]
+                except (ValueError, IndexError, TypeError):
+                    continue
+                if not isinstance(sents, list):
+                    continue
+                parts: list[str] = []
+                for s in sents:
+                    if not isinstance(s, list) or not s or s[0] is None:
+                        continue
+                    if len(s) > 2 and s[2] is True and parts and not parts[-1].endswith("\n"):
+                        parts.append(" ")
+                    parts.append(str(s[0]))
+                results[int(call_id_str)] = "".join(parts).strip()
+        return results
+
+    async def _translate_batch_rpc(
+        self,
+        segments: list[str],
+        *,
+        source_code: str,
+        target_code: str,
+    ) -> list[str] | None:
+        """Translate multiple text segments in a single ``batchexecute`` (``MkEWBc``) POST.
+
+        Rotates across 6 regional Google Translate domains so high-volume runs (47 metadata
+        languages + 47 subtitle languages) distribute load across independent pools.
+        """
+        if not segments:
+            return []
+
+        calls = [
+            [
+                "MkEWBc",
+                json.dumps([[seg, source_code, target_code, True], [None]], ensure_ascii=False),
+                None,
+                str(i),
+            ]
+            for i, seg in enumerate(segments)
+        ]
+        f_req = json.dumps([calls], ensure_ascii=False)
+        num_hosts = len(self._BATCHEXECUTE_URLS)
+
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            headers={
+                "User-Agent": self._USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            },
+        ) as client:
+            for offset in range(num_hosts):
+                host_idx = (self._rpc_host_cursor + offset) % num_hosts
+                url = self._BATCHEXECUTE_URLS[host_idx]
+                try:
+                    resp = await client.post(
+                        url,
+                        params={"rpcids": "MkEWBc"},
+                        data={"f.req": f_req},
+                    )
+                except httpx.HTTPError:
+                    continue
+                if resp.status_code != 200:
+                    continue
+                parsed = self._parse_batchexecute_response(resp.text)
+                if len(parsed) == len(segments) and all(
+                    i in parsed and parsed[i] for i in range(len(segments))
+                ):
+                    self._rpc_host_cursor = (host_idx + 1) % num_hosts
+                    return [parsed[i] for i in range(len(segments))]
+        return None
+
+    async def _translate_raw(self, text: str, source_code: str, target_code: str) -> str:
+        if not text.strip():
+            return text
+        if self._translate_fn is not None:
+            return await self._translate_fn(text, source_code, target_code)
+
+        # 1. Try multi-domain batchexecute RPC first (highest quota pool)
+        rpc_res = await self._translate_batch_rpc(
+            [text],
+            source_code=source_code,
+            target_code=target_code,
+        )
+        if rpc_res and rpc_res[0]:
+            return rpc_res[0]
+
+        # 2. Fallback to multi-domain /translate_a/single across client profiles
+        backoffs = (1.5, 4.0)
+        payload: Any = None
+        last_exc: Exception | None = None
+        endpoints = [(url, cid) for cid in self._CLIENT_PROFILES for url in self._SINGLE_URLS]
+        num_endpoints = len(endpoints)
+
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            headers={"User-Agent": self._USER_AGENT},
+        ) as client:
+            for attempt in range(len(backoffs) + 1):
+                for offset in range(num_endpoints):
+                    idx = (self._preferred_client_idx + offset) % num_endpoints
+                    url, client_id = endpoints[idx]
+                    params = {
+                        "client": client_id,
+                        "sl": source_code,
+                        "tl": target_code,
+                        "dt": "t",
+                    }
+                    try:
+                        resp = await client.post(url, params=params, data={"q": text})
+                    except httpx.HTTPError as exc:
+                        last_exc = exc
+                        continue
+
+                    if resp.status_code in (302, 403, 429, 503):
+                        last_exc = httpx.HTTPStatusError(
+                            f"HTTP {resp.status_code}",
+                            request=resp.request,
+                            response=resp,
+                        )
+                        continue
+
+                    try:
+                        resp.raise_for_status()
+                        payload = resp.json()
+                        self._preferred_client_idx = idx
+                        last_exc = None
+                        break
+                    except (httpx.HTTPError, ValueError) as exc:
+                        last_exc = exc
+
+                if last_exc is None:
+                    break
+                if attempt < len(backoffs):
+                    await asyncio.sleep(backoffs[attempt])
+
+        if last_exc is not None:
+            status = (
+                last_exc.response.status_code
+                if isinstance(last_exc, httpx.HTTPStatusError)
+                else "network error"
+            )
+            raise MetadataTranslationError(
+                f"Google Translate request failed for tl={target_code!r} (HTTP {status})."
+            ) from last_exc
+
+        if not isinstance(payload, list) or not payload or not isinstance(payload[0], list):
+            raise MetadataTranslationError(
+                f"Google Translate returned unexpected payload for tl={target_code!r}."
+            )
+        parts: list[str] = []
+        for item in payload[0]:
+            if isinstance(item, list) and item and item[0] is not None:
+                parts.append(str(item[0]))
+        return "".join(parts)
+
+    async def _translate_core_batch(
+        self,
+        cores: list[str],
+        *,
+        source_code: str,
+        target_code: str,
+    ) -> list[str]:
+        """Translate a list of text segments with minimal HTTP calls."""
+        if not cores:
+            return []
+        if len(cores) == 1:
+            single = (await self._translate_raw(cores[0], source_code, target_code)).strip()
+            return [single or cores[0]]
+
+        # When running against live Google Translate (no mock translate_fn), pack all segments
+        # into a single multi-RPC batchexecute POST (chunks of 50) so each segment has its own
+        # indexed call_id and 1 language = 1 HTTP request with zero newline-merging issues.
+        if self._translate_fn is None:
+            rpc_results: list[str] = []
+            rpc_ok = True
+            for start in range(0, len(cores), 50):
+                chunk = cores[start : start + 50]
+                chunk_out = await self._translate_batch_rpc(
+                    chunk,
+                    source_code=source_code,
+                    target_code=target_code,
+                )
+                if chunk_out is None or len(chunk_out) != len(chunk):
+                    rpc_ok = False
+                    break
+                rpc_results.extend(chunk_out)
+            if rpc_ok and len(rpc_results) == len(cores):
+                return rpc_results
+
+        # 1. Try single-newline batching first
+        joined_nl = "\n".join(cores)
+        out_nl = await self._translate_raw(joined_nl, source_code, target_code)
+        split_nl = [seg.strip() for seg in out_nl.split("\n")]
+        if len(split_nl) == len(cores) and all(split_nl):
+            return split_nl
+
+        # 2. Try double-newline paragraph batching (prevents Google from merging sentences)
+        joined_para = "\n\n".join(cores)
+        out_para = await self._translate_raw(joined_para, source_code, target_code)
+        split_para = [seg.strip() for seg in out_para.split("\n\n") if seg.strip()]
+        if len(split_para) == len(cores):
+            return split_para
+
+        # 3. Fall back to small chunks of 8 before ever doing single-line requests
+        if len(cores) > 8:
+            results: list[str] = []
+            for start in range(0, len(cores), 8):
+                chunk = cores[start : start + 8]
+                results.extend(
+                    await self._translate_core_batch(
+                        chunk,
+                        source_code=source_code,
+                        target_code=target_code,
+                    )
+                )
+            return results
+
+        singles: list[str] = []
+        for core in cores:
+            s = (await self._translate_raw(core, source_code, target_code)).strip()
+            singles.append(s or core)
+        return singles
+
+    async def _translate_masked_lines(
+        self,
+        masked_lines: list[str],
+        bundle: PlaceholderBundle,
+        *,
+        source_code: str,
+        target_code: str,
+    ) -> list[str]:
+        """Translate plain-text segments across lines while restoring placeholders in Python."""
+        # Each line is decomposed into a list of parts:
+        # either ("literal", str) or ("translatable", lead_ws, core_Index, trail_ws)
+        line_structures: list[list[tuple[str, ...]]] = []
+        cores_to_translate: list[str] = []
+
+        for line in masked_lines:
+            pieces = _PLACEHOLDER_TOKEN_RE.split(line)
+            struct: list[tuple[str, ...]] = []
+            for piece in pieces:
+                if not piece:
+                    continue
+                if _PLACEHOLDER_TOKEN_RE.fullmatch(piece):
+                    literal = bundle.token_to_literal.get(piece, piece)
+                    struct.append(("literal", literal))
+                elif any(ch.isalpha() for ch in piece):
+                    stripped = piece.strip()
+                    lead_len = len(piece) - len(piece.lstrip())
+                    trail_len = len(piece) - len(piece.rstrip())
+                    lead_ws = piece[:lead_len] if lead_len > 0 else ""
+                    trail_ws = piece[len(piece) - trail_len :] if trail_len > 0 else ""
+                    idx = len(cores_to_translate)
+                    cores_to_translate.append(stripped)
+                    struct.append(("translatable", lead_ws, str(idx), trail_ws))
+                else:
+                    struct.append(("literal", piece))
+            line_structures.append(struct)
+
+        translated_cores = await self._translate_core_batch(
+            cores_to_translate,
+            source_code=source_code,
+            target_code=target_code,
+        )
+
+        rebuilt_lines: list[str] = []
+        for struct in line_structures:
+            line_parts: list[str] = []
+            for item in struct:
+                if item[0] == "literal":
+                    line_parts.append(item[1])
+                else:
+                    _, lead_ws, idx_str, trail_ws = item
+                    core_trans = translated_cores[int(idx_str)]
+                    line_parts.append(f"{lead_ws}{core_trans}{trail_ws}")
+            rebuilt_lines.append("".join(line_parts))
+        return rebuilt_lines
+
+    @staticmethod
+    def _enforce_description_byte_limit(
+        description: str,
+        *,
+        bundle: PlaceholderBundle,
+        max_bytes: int = MAX_DESCRIPTION_BYTES,
+    ) -> str:
+        cleaned = description.replace("<", "").replace(">", "").strip()
+        if len(cleaned.encode("utf-8")) <= max_bytes:
+            return cleaned
+
+        # Preserve lines containing protected tokens (URLs, handles, hashtags, glossary)
+        required_literals = [bundle.token_to_literal[t] for t in bundle.description_tokens]
+        lines = cleaned.split("\n")
+        protected_lines: list[str] = []
+        narrative_lines: list[str] = []
+        for line in lines:
+            if any(lit in line for lit in required_literals):
+                protected_lines.append(line)
+            else:
+                narrative_lines.append(line)
+
+        protected_block = "\n".join(protected_lines)
+        protected_bytes = len(protected_block.encode("utf-8"))
+        budget = max(0, max_bytes - protected_bytes - 2)
+        kept_narrative: list[str] = []
+        used_bytes = 0
+        for line in narrative_lines:
+            line_bytes = len((line + "\n").encode("utf-8"))
+            if used_bytes + line_bytes <= budget:
+                kept_narrative.append(line)
+                used_bytes += line_bytes
+            else:
+                break
+        combined = "\n".join([*kept_narrative, *protected_lines]).strip()
+        while len(combined.encode("utf-8")) > max_bytes and len(combined) > 1:
+            combined = combined[:-1]
+        return combined.strip()
+
+    async def translate_metadata(
+        self,
+        *,
+        source_title: str,
+        source_description: str,
+        source_language: SourceLanguage,
+        target_language: TargetLanguage,
+        protected_glossary: Sequence[str] = (),
+    ) -> tuple[str, str]:
+        """Return ``(localized_title, localized_description)`` with <=100-char title."""
+        bundle = extract_protected_placeholders(
+            source_title,
+            source_description,
+            glossary=protected_glossary,
+        )
+        source_code = source_language.code.strip()
+        target_code = self.resolve_google_lang_code(target_language)
+
+        title_lines = [" ".join(bundle.masked_title.splitlines())]
+        desc_lines = bundle.masked_description.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        all_lines = [*title_lines, *desc_lines]
+
+        translated_all = await self._translate_masked_lines(
+            all_lines,
+            bundle,
+            source_code=source_code,
+            target_code=target_code,
+        )
+        raw_title = restore_placeholders(translated_all[0], bundle)
+        raw_desc = restore_placeholders("\n".join(translated_all[1:]), bundle)
+
+        final_title = enforce_title_max_length(
+            raw_title,
+            max_chars=self._max_title_length,
+            source_title=source_title,
+            protected_glossary=protected_glossary,
+        )
+        final_desc = self._enforce_description_byte_limit(raw_desc, bundle=bundle)
+        return final_title, final_desc
+
+
+class GoogleCaptionTranslator:
+    """Translates subtitle cues via Google Translate while preserving cue indices and timings."""
+
+    provider_name = "google_translate"
+    prompt_version = "google_translate.captions.v1"
+
+    def __init__(
+        self,
+        *,
+        batch_size: int = 40,
+        translate_fn: Callable[[str, str, str], Awaitable[str]] | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> None:
+        self._batch_size = max(1, batch_size)
+        self._meta_helper = GoogleMetadataTranslator(
+            translate_fn=translate_fn,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def translate_cue_subset(
+        self,
+        *,
+        cues_to_translate: Sequence[SubtitleCue],
+        target_language: TargetLanguage,
+        source_language: SourceLanguage,
+        protected_glossary: Sequence[str] = (),
+        max_line_length: int = 84,
+    ) -> tuple[dict[int, str], bool, str | None, int, str]:
+        """Translate a subset of subtitle cues while preserving cue indices and glossary terms."""
+        if not cues_to_translate:
+            return {}, False, None, 0, self.prompt_version
+
+        source_code = source_language.code.strip()
+        target_code = GoogleMetadataTranslator.resolve_google_lang_code(target_language)
+        translated_by_index: dict[int, str] = {}
+        attempts = 0
+
+        for start in range(0, len(cues_to_translate), self._batch_size):
+            batch = cues_to_translate[start : start + self._batch_size]
+            attempts += 1
+            single_line_cues = [" ".join(c.text.splitlines()).strip() for c in batch]
+            joined_cues = "\n".join(single_line_cues)
+            bundle = extract_protected_placeholders(
+                "",
+                joined_cues,
+                glossary=protected_glossary,
+            )
+            masked_lines = bundle.masked_description.split("\n")
+            try:
+                translated_lines = await self._meta_helper._translate_masked_lines(
+                    masked_lines,
+                    bundle,
+                    source_code=source_code,
+                    target_code=target_code,
+                )
+            except MetadataTranslationError as exc:
+                raise CaptionTranslationError(str(exc), quota_units_used=0) from exc
+
+            for cue, raw_line in zip(batch, translated_lines, strict=True):
+                restored = restore_placeholders(raw_line, bundle).strip()
+                cleaned = restored.replace("<", "").replace(">", "").strip()
+                if not cleaned:
+                    cleaned = " ".join(cue.text.splitlines()).strip()
+                wrapped = LLMCaptionTranslator._wrap_cue_lines(cleaned, max_line_length)
+                translated_by_index[cue.index] = wrapped
+
+        return translated_by_index, False, None, max(1, attempts), self.prompt_version
+
+    async def translate_captions(
+        self,
+        *,
+        source_caption_id: str,
+        source_cues: Sequence[SubtitleCue],
+        target_language: TargetLanguage,
+        source_language: SourceLanguage,
+        protected_glossary: Sequence[str] = (),
+        max_line_length: int = 84,
+    ) -> CaptionTranslationResult:
+        del source_caption_id
+        if not source_cues:
+            raise CaptionTranslationError("Source caption track has no cues to translate.")
+
+        (
+            translated_map,
+            any_ambiguous,
+            notes,
+            attempts,
+            prompt_ver,
+        ) = await self.translate_cue_subset(
+            cues_to_translate=source_cues,
+            target_language=target_language,
+            source_language=source_language,
+            protected_glossary=protected_glossary,
+            max_line_length=max_line_length,
+        )
+
+        rebuilt_cues = tuple(
+            SubtitleCue(
+                index=src.index,
+                start_ms=src.start_ms,
+                end_ms=src.end_ms,
+                text=translated_map[src.index],
+            )
+            for src in source_cues
+        )
+        srt_text = serialize_subtitles_to_srt(rebuilt_cues)
+        parsed = parse_and_validate_subtitles(
+            srt_text,
+            SubtitleFormat.SRT,
+            reference_cues=tuple(source_cues),
+            max_line_length=max_line_length,
+        )
+        if not parsed.is_valid:
+            issue_codes = [i.code for i in parsed.report.issues]
+            raise CaptionTranslationError(
+                f"Google Translate captions for {target_language.code!r} failed validation: "
+                f"{issue_codes}",
+                quota_units_used=0,
+            )
+        return CaptionTranslationResult(
+            provider_used=self.provider_name,
+            prompt_version=prompt_ver,
+            srt_content=srt_text,
+            parsed_doc=parsed,
+            source_ambiguous=any_ambiguous,
+            ambiguity_notes=notes,
+            quota_units_used=0,
+            attempt_count=attempts,
+        )
+
+
 __all__ = [
     "CaptionTranslationError",
     "CaptionTranslationProvider",
     "CaptionTranslationResult",
     "FakeStructuredLLMClient",
     "GeminiStructuredClient",
+    "GoogleCaptionTranslator",
+    "GoogleMetadataTranslator",
     "LLMCaptionTranslator",
     "LLMOutputValidationError",
     "LLMStructuredClient",
+    "MetadataTranslationError",
     "TranslatedCueItem",
     "YouTubeNativeCaptionTranslator",
     "create_llm_structured_client",

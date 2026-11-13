@@ -10,8 +10,10 @@ Enforces:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -219,6 +221,76 @@ async def upsert_video_from_youtube_resource(
     return video
 
 
+_YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def extract_youtube_video_id(url_or_id: str) -> str:
+    """Extract an 11-character YouTube video ID from a URL or raw ID string."""
+    raw = url_or_id.strip()
+    if _YOUTUBE_VIDEO_ID_RE.fullmatch(raw):
+        return raw
+
+    try:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    except ValueError as exc:
+        raise ValueError(f"Invalid YouTube URL or video ID: {url_or_id!r}") from exc
+
+    qs = parse_qs(parsed.query)
+    if qs.get("v"):
+        candidate = qs["v"][0].strip()
+        if _YOUTUBE_VIDEO_ID_RE.fullmatch(candidate):
+            return candidate
+
+    segments = [seg.strip() for seg in parsed.path.split("/") if seg.strip()]
+    for idx, seg in enumerate(segments):
+        if seg in ("shorts", "embed", "live", "v", "video") and idx + 1 < len(segments):
+            candidate = segments[idx + 1]
+            if _YOUTUBE_VIDEO_ID_RE.fullmatch(candidate):
+                return candidate
+        if _YOUTUBE_VIDEO_ID_RE.fullmatch(seg):
+            return seg
+
+    raise ValueError(f"Could not extract a valid 11-character YouTube video ID from {url_or_id!r}.")
+
+
+async def import_video_by_url_or_id(
+    session: AsyncSession,
+    *,
+    yt_client: YouTubeReadOnlyDataClient,
+    url_or_id: str,
+    expected_channel_id: str = "",
+    source_language: str = "tr",
+    now: datetime | None = None,
+) -> Video:
+    """Fetch a single video by YouTube URL or video ID (1 quota unit) and persist it."""
+    current = now or datetime.now(UTC)
+    video_id = extract_youtube_video_id(url_or_id)
+    resources = await yt_client.get_videos([video_id])
+    await record_quota_usage(
+        session,
+        api_method="videos.list",
+        units=QUOTA_VIDEOS_LIST,
+        video_id=video_id,
+        now=current,
+    )
+    if not resources:
+        raise LookupError(f"Video {video_id!r} was not found on YouTube.")
+
+    res = resources[0]
+    if expected_channel_id.strip() and res.channel_id != expected_channel_id.strip():
+        raise ChannelBindingMismatchError(
+            f"Video {video_id!r} belongs to channel {res.channel_id!r}, "
+            f"not connected channel {expected_channel_id.strip()!r}."
+        )
+
+    return await upsert_video_from_youtube_resource(
+        session,
+        res,
+        source_language=source_language,
+        now=current,
+    )
+
+
 async def discover_channel_videos(
     session: AsyncSession,
     *,
@@ -231,20 +303,22 @@ async def discover_channel_videos(
     """Discover recent videos from the channel's uploads playlist and persist snapshots."""
     current = now or datetime.now(UTC)
     video_ids = await yt_client.list_upload_video_ids(uploads_playlist_id, max_results=max_results)
+    pages_used = max(1, (len(video_ids) + 49) // 50)
     await record_quota_usage(
         session,
         api_method="playlistItems.list",
-        units=QUOTA_PLAYLIST_ITEMS_LIST,
+        units=QUOTA_PLAYLIST_ITEMS_LIST * pages_used,
         now=current,
     )
     if not video_ids:
         return []
 
     resources = await yt_client.get_videos(video_ids)
+    batches_used = max(1, (len(video_ids) + 49) // 50)
     await record_quota_usage(
         session,
         api_method="videos.list",
-        units=QUOTA_VIDEOS_LIST,
+        units=QUOTA_VIDEOS_LIST * batches_used,
         now=current,
     )
 

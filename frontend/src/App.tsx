@@ -39,6 +39,8 @@ function buildSrtFromCues(cues: AlignedCuePair[]): string {
   );
 }
 
+type LocalizeScope = "all" | "metadata" | "subtitles";
+
 function stateBadgeClass(state: AssetState | string): string {
   if (state === "ready_to_publish" || state === "published") {
     return "badge badge-success";
@@ -65,6 +67,8 @@ export function App() {
     useState<ChannelStatusResponse | null>(null);
   const [videos, setVideos] = useState<DiscoveredVideoSummary[]>([]);
   const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [importVideoInput, setImportVideoInput] = useState("");
+  const [videoSearchQuery, setVideoSearchQuery] = useState("");
   const [localization, setLocalization] =
     useState<VideoLocalizationResponse | null>(null);
   const [selectedAsset, setSelectedAsset] =
@@ -155,15 +159,44 @@ export function App() {
     }
   };
 
-  const handleDiscoverUploads = async () => {
+  const handleDiscoverUploads = async (maxResults = 50) => {
     try {
-      setBusyMessage("Discovering recent channel uploads...");
+      setBusyMessage(`Discovering up to ${maxResults} channel uploads...`);
       setErrorBanner(null);
-      const res = await dashboardApi.discoverVideos(10);
-      setVideos(res.videos);
+      const res = await dashboardApi.discoverVideos(maxResults);
+      const allVids = await dashboardApi.listVideos();
+      setVideos(allVids);
       const chan = await dashboardApi.getChannelStatus();
       setChannelStatus(chan);
-      setNoticeBanner(`Discovered ${res.discovered_count} videos.`);
+      setNoticeBanner(
+        `Synced ${res.discovered_count} channel uploads (${allVids.length} total in queue).`
+      );
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyMessage(null);
+    }
+  };
+
+  const handleImportVideo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const raw = importVideoInput.trim();
+    if (!raw) return;
+    try {
+      setBusyMessage(`Importing video '${raw}' from YouTube...`);
+      setErrorBanner(null);
+      const imported = await dashboardApi.importVideo(raw);
+      const [allVids, chan] = await Promise.all([
+        dashboardApi.listVideos(),
+        dashboardApi.getChannelStatus(),
+      ]);
+      setVideos(allVids);
+      setChannelStatus(chan);
+      setSelectedVideoId(imported.youtube_video_id);
+      setImportVideoInput("");
+      setNoticeBanner(
+        `Imported video '${imported.source_title}' (${imported.youtube_video_id}).`
+      );
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
     } finally {
@@ -188,13 +221,16 @@ export function App() {
 
   const handleLocalizeVideo = async (
     langSubset?: string[],
-    metadataOnly = false
+    scope: LocalizeScope = "all"
   ) => {
     if (!selectedVideoId) return;
     try {
-      const scopeLabel = metadataOnly
-        ? "Title & Description only (0 YouTube quota)"
-        : "Title, Description & Subtitles";
+      const scopeLabel =
+        scope === "metadata"
+          ? "Title & Description only (Google Translate → LLM)"
+          : scope === "subtitles"
+            ? "Subtitles only (YouTube → Google Translate → LLM)"
+            : "Title, Description & Subtitles";
       setBusyMessage(
         langSubset
           ? `Running localization (${scopeLabel}) for ${langSubset.join(", ")}...`
@@ -203,8 +239,8 @@ export function App() {
       setErrorBanner(null);
       const res = await dashboardApi.localizeVideo(selectedVideoId, {
         languages: langSubset,
-        include_metadata: true,
-        include_captions: !metadataOnly,
+        include_metadata: scope !== "subtitles",
+        include_captions: scope !== "metadata",
       });
       setLocalization(res);
       setNoticeBanner(
@@ -579,19 +615,78 @@ export function App() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
+              gap: "0.35rem",
+              flexWrap: "wrap",
             }}
           >
             <strong>Channel Videos ({videos.length})</strong>
-            <button
-              className="btn btn-primary"
-              onClick={() => void handleDiscoverUploads()}
-              disabled={Boolean(busyMessage)}
-            >
-              Sync Uploads
-            </button>
+            <div style={{ display: "flex", gap: "0.35rem" }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => void handleDiscoverUploads(50)}
+                disabled={Boolean(busyMessage)}
+                title="Sync the 50 most recent uploads from your channel (costs 2 quota units)"
+              >
+                Sync (50)
+              </button>
+              <button
+                className="btn"
+                onClick={() => void handleDiscoverUploads(500)}
+                disabled={Boolean(busyMessage)}
+                title="Paginate through up to 500 channel uploads to discover older videos"
+              >
+                Sync All
+              </button>
+            </div>
           </div>
 
-          {videos.map((v) => (
+          <form
+            onSubmit={(e) => void handleImportVideo(e)}
+            style={{ display: "flex", gap: "0.35rem", marginTop: "0.5rem" }}
+          >
+            <input
+              type="text"
+              placeholder="Paste YouTube URL or Video ID..."
+              value={importVideoInput}
+              onChange={(e) => setImportVideoInput(e.target.value)}
+              style={{ flex: 1, minWidth: 0, fontSize: "0.8rem", padding: "0.35rem 0.5rem" }}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={Boolean(busyMessage) || !importVideoInput.trim()}
+              title="Import any older video from your channel by pasting its YouTube URL or 11-char ID (1 quota unit)"
+            >
+              Add
+            </button>
+          </form>
+
+          {videos.length > 5 && (
+            <input
+              type="text"
+              placeholder="Filter loaded videos by title or ID..."
+              value={videoSearchQuery}
+              onChange={(e) => setVideoSearchQuery(e.target.value)}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                fontSize: "0.8rem",
+                padding: "0.35rem 0.5rem",
+                marginTop: "0.35rem",
+              }}
+            />
+          )}
+
+          {videos
+            .filter((v) => {
+              const q = videoSearchQuery.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                v.source_title.toLowerCase().includes(q) ||
+                v.youtube_video_id.toLowerCase().includes(q)
+              );
+            })
+            .map((v) => (
             <button
               key={v.youtube_video_id}
               className={`video-card ${
@@ -685,15 +780,27 @@ export function App() {
                     </button>
                     <button
                       className="btn btn-primary"
-                      onClick={() => void handleLocalizeVideo(undefined, true)}
+                      onClick={() =>
+                        void handleLocalizeVideo(undefined, "metadata")
+                      }
                       disabled={Boolean(busyMessage)}
-                      title="Translate only Title & Description using Gemini (0 YouTube API quota units)"
+                      title="Translate only Title & Description: Google Translate first, LLM fallback (0 YouTube API quota units)"
                     >
                       Localize Only Title & Description
                     </button>
                     <button
                       className="btn btn-primary"
-                      onClick={() => void handleLocalizeVideo(undefined, false)}
+                      onClick={() =>
+                        void handleLocalizeVideo(undefined, "subtitles")
+                      }
+                      disabled={Boolean(busyMessage)}
+                      title="Translate only Subtitles: YouTube native first, then Google Translate, then LLM when quotas are reached"
+                    >
+                      Localize Only Subtitles
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => void handleLocalizeVideo(undefined, "all")}
                       disabled={Boolean(busyMessage)}
                       title="Translate Title, Description & Subtitles for all enabled languages"
                     >
@@ -767,7 +874,9 @@ export function App() {
                           <button
                             className="btn"
                             style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
-                            onClick={() => void handleLocalizeVideo([lang.code], true)}
+                            onClick={() =>
+                              void handleLocalizeVideo([lang.code], "metadata")
+                            }
                             disabled={Boolean(busyMessage)}
                             title="Localize only Title & Description for this language (0 YouTube quota)"
                           >
@@ -776,7 +885,18 @@ export function App() {
                           <button
                             className="btn"
                             style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
-                            onClick={() => void handleLocalizeVideo([lang.code], false)}
+                            onClick={() =>
+                              void handleLocalizeVideo([lang.code], "subtitles")
+                            }
+                            disabled={Boolean(busyMessage)}
+                            title="Localize only Subtitles for this language (YouTube → Google Translate → LLM)"
+                          >
+                            Subs Only
+                          </button>
+                          <button
+                            className="btn"
+                            style={{ padding: "0.25rem 0.55rem", fontSize: "0.75rem" }}
+                            onClick={() => void handleLocalizeVideo([lang.code], "all")}
                             disabled={Boolean(busyMessage)}
                             title="Localize Title, Description & Subtitles for this language"
                           >

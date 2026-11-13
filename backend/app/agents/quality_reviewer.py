@@ -218,6 +218,24 @@ class QualityReviewerAgent:
                 )
             except (LLMOutputValidationError, ValidationError) as exc:
                 last_error = str(exc)
+                err_lower = last_error.lower()
+                if "resource_exhausted" in err_lower or "quotaexceeded" in err_lower:
+                    has_blocking = any(
+                        i.severity is ReviewIssueSeverity.BLOCKING for i in pre_issues
+                    )
+                    return QualityReviewResult(
+                        passed=not has_blocking,
+                        source_ambiguous=False,
+                        summary=(
+                            "Passed deterministic quality checks (LLM quota exhausted)."
+                            if not has_blocking
+                            else "Failed deterministic quality checks."
+                        ),
+                        issues=tuple(pre_issues),
+                        prompt_version="deterministic.review.v1",
+                        attempt_count=attempts,
+                        last_error=None if not has_blocking else last_error,
+                    )
 
         fallback_issue = QualityReviewIssue(
             category=ReviewIssueCategory.CONSISTENCY,
@@ -236,6 +254,36 @@ class QualityReviewerAgent:
             prompt_version=loaded_prompt.name,
             attempt_count=attempts,
             last_error=last_error,
+        )
+
+    def review_metadata_deterministic(
+        self,
+        *,
+        source_title: str,
+        source_description: str,
+        translated_title: str,
+        translated_description: str,
+    ) -> QualityReviewResult:
+        """Run deterministic metadata quality checks without invoking the LLM."""
+        pre_issues = self._deterministic_metadata_checks(
+            source_title=source_title,
+            source_description=source_description,
+            translated_title=translated_title,
+            translated_description=translated_description,
+        )
+        has_blocking = any(i.severity is ReviewIssueSeverity.BLOCKING for i in pre_issues)
+        return QualityReviewResult(
+            passed=not has_blocking,
+            source_ambiguous=False,
+            summary=(
+                "Passed deterministic metadata quality checks."
+                if not has_blocking
+                else "; ".join(i.message for i in pre_issues)
+            ),
+            issues=tuple(pre_issues),
+            prompt_version="deterministic.review.v1",
+            attempt_count=1,
+            last_error=None if not has_blocking else "; ".join(i.message for i in pre_issues),
         )
 
     async def review_metadata(
@@ -267,6 +315,32 @@ class QualityReviewerAgent:
             target_language=target_language,
             protected_glossary=protected_glossary,
             pre_issues=pre_issues,
+        )
+
+    def review_captions_deterministic(
+        self,
+        *,
+        source_cues: Sequence[SubtitleCue],
+        translated_cues: Sequence[SubtitleCue],
+    ) -> QualityReviewResult:
+        """Run deterministic caption quality checks without invoking the LLM."""
+        pre_issues = self._deterministic_caption_checks(
+            source_cues=source_cues,
+            translated_cues=translated_cues,
+        )
+        has_blocking = any(i.severity is ReviewIssueSeverity.BLOCKING for i in pre_issues)
+        return QualityReviewResult(
+            passed=not has_blocking,
+            source_ambiguous=False,
+            summary=(
+                "Passed deterministic caption quality checks."
+                if not has_blocking
+                else "; ".join(i.message for i in pre_issues)
+            ),
+            issues=tuple(pre_issues),
+            prompt_version="deterministic.review.v1",
+            attempt_count=1,
+            last_error=None if not has_blocking else "; ".join(i.message for i in pre_issues),
         )
 
     async def review_captions(
