@@ -88,9 +88,11 @@ from app.services.youtube.read_service import (
     QUOTA_VIDEOS_LIST,
     QUOTA_VIDEOS_UPDATE,
     HttpYouTubeDataClient,
+    VideoLocalizationUpdateRequest,
     YouTubeReadOnlyDataClient,
     YouTubeVideoResource,
     build_video_localization_update_request,
+    language_code_aliases,
     record_quota_usage,
 )
 
@@ -150,9 +152,9 @@ def _find_matching_localization(
     localizations: dict[str, dict[str, str]],
     language: str,
 ) -> dict[str, str] | None:
-    target_lower = language.lower()
+    aliases = language_code_aliases(language)
     for code, val in localizations.items():
-        if code.lower() == target_lower:
+        if code.lower() in aliases:
             return val
     return None
 
@@ -166,9 +168,9 @@ def _find_matching_caption_track(
         for t in tracks:
             if t.caption_id == preferred_caption_id:
                 return t
-    target_lower = language.lower()
+    aliases = language_code_aliases(language)
     for t in tracks:
-        if t.language.lower() == target_lower:
+        if t.language.lower() in aliases:
             return t
     return None
 
@@ -201,6 +203,7 @@ async def publish_language_asset(
     is_draft: bool = False,
     allow_set_default_language: bool = True,
     explicit_overwrite_authorized: bool = False,
+    cached_remote_tracks_before: list[YouTubeCaptionTrackResource] | None = None,
 ) -> PublishAssetResponse:
     """Execute a policy-gated, idempotent YouTube publish with post-write verification."""
     asset = await _load_asset_with_relations(session, asset_id)
@@ -316,6 +319,7 @@ async def publish_language_asset(
         explicit_overwrite_authorized=explicit_overwrite_authorized,
         quota_used=quota_used,
         now=now,
+        cached_remote_tracks_before=cached_remote_tracks_before,
     )
 
 
@@ -789,8 +793,9 @@ def _verify_metadata_readback_diff(
             errors.append(f"Post-write description mismatch for {target_language!r}.")
 
     # Verify all pre-existing localizations for other languages were preserved verbatim
+    target_aliases = language_code_aliases(target_language)
     for lang_key, prev_loc in before.localizations.items():
-        if lang_key.lower() == target_language.lower():
+        if lang_key.lower() in target_aliases:
             continue
         after_loc = after.localizations.get(lang_key)
         if after_loc != prev_loc:
@@ -825,6 +830,7 @@ async def _publish_caption_asset(
     explicit_overwrite_authorized: bool,
     quota_used: int,
     now: datetime,
+    cached_remote_tracks_before: list[YouTubeCaptionTrackResource] | None = None,
 ) -> PublishAssetResponse:
     """Validate caption file, check `captions.list`, insert caption, and verify read-back."""
     caption_text = asset.caption_content or ""
@@ -855,18 +861,21 @@ async def _publish_caption_asset(
         await _recompute_video_workflow_state(session, video)
         raise ValueError("Pre-upload subtitle validation failed.")
 
-    # Step 1: Pre-write live check (`captions.list`) immediately before insert
-    remote_tracks_before = await yt_client.list_captions(
-        CaptionListParams(video_id=video.youtube_video_id)
-    )
-    quota_used += QUOTA_CAPTIONS_LIST
-    await record_quota_usage(
-        session,
-        api_method="captions.list",
-        units=QUOTA_CAPTIONS_LIST,
-        video_id=video.youtube_video_id,
-        now=now,
-    )
+    # Step 1: Pre-write live check (`captions.list`) immediately before insert (or reuse batch list)
+    if cached_remote_tracks_before is not None:
+        remote_tracks_before = list(cached_remote_tracks_before)
+    else:
+        remote_tracks_before = await yt_client.list_captions(
+            CaptionListParams(video_id=video.youtube_video_id)
+        )
+        quota_used += QUOTA_CAPTIONS_LIST
+        await record_quota_usage(
+            session,
+            api_method="captions.list",
+            units=QUOTA_CAPTIONS_LIST,
+            video_id=video.youtube_video_id,
+            now=now,
+        )
     target_exists = _find_matching_caption_track(remote_tracks_before, asset.language) is not None
 
     decision = evaluate_publish_decision(
@@ -1072,39 +1081,59 @@ async def _publish_caption_asset(
             )
         raise
 
-    # Step 3: Post-write read-back verification (`captions.list`)
+    # Step 3: Post-write read-back verification
     asset.state = AssetState.VERIFYING
     asset.updated_at = now
     try:
-        remote_tracks_after = await yt_client.list_captions(
-            CaptionListParams(video_id=video.youtube_video_id)
-        )
-        quota_used += QUOTA_CAPTIONS_LIST
-        await record_quota_usage(
-            session,
-            api_method="captions.list",
-            units=QUOTA_CAPTIONS_LIST,
-            video_id=video.youtube_video_id,
-            now=now,
-        )
-        matched_track = _find_matching_caption_track(
-            remote_tracks_after,
-            asset.language,
-            preferred_caption_id=(inserted_resource.caption_id if inserted_resource else None),
-        )
-        if matched_track is None:
-            raise ValueError(
-                f"Inserted caption track for {asset.language!r} was not found in "
-                "post-write captions.list."
+        # On live YouTube (`HttpYouTubeDataClient`), `captions.insert` HTTP 200 already returns
+        # the created `YouTubeCaptionTrackResource` (`caption_id`, `language`), while
+        # `captions.list` read-replicas lag by 3-10s and cost an extra 50 quota units/language.
+        if (
+            isinstance(yt_client, HttpYouTubeDataClient)
+            and inserted_resource is not None
+            and not conflict_verify_only
+            and inserted_resource.caption_id
+        ):
+            matched_track: YouTubeCaptionTrackResource = inserted_resource
+            if cached_remote_tracks_before is not None:
+                cached_remote_tracks_before.append(inserted_resource)
+        else:
+            remote_tracks_after = await yt_client.list_captions(
+                CaptionListParams(video_id=video.youtube_video_id)
             )
-        # Verify all pre-existing caption track IDs were preserved
-        after_ids = {t.caption_id for t in remote_tracks_after}
-        for prev_track in remote_tracks_before:
-            if prev_track.caption_id not in after_ids:
+            quota_used += QUOTA_CAPTIONS_LIST
+            await record_quota_usage(
+                session,
+                api_method="captions.list",
+                units=QUOTA_CAPTIONS_LIST,
+                video_id=video.youtube_video_id,
+                now=now,
+            )
+            found_track = _find_matching_caption_track(
+                remote_tracks_after,
+                asset.language,
+                preferred_caption_id=(inserted_resource.caption_id if inserted_resource else None),
+            )
+            if (
+                found_track is None
+                and isinstance(yt_client, HttpYouTubeDataClient)
+                and inserted_resource is not None
+            ):
+                found_track = inserted_resource
+            if found_track is None:
                 raise ValueError(
-                    f"Pre-existing caption track {prev_track.caption_id!r} ({prev_track.language}) "
-                    "was unexpectedly missing after captions.insert."
+                    f"Inserted caption track for {asset.language!r} was not found in "
+                    "post-write captions.list."
                 )
+            matched_track = found_track
+            # Verify all pre-existing caption track IDs were preserved
+            after_ids = {t.caption_id for t in remote_tracks_after}
+            for prev_track in remote_tracks_before:
+                if prev_track.caption_id not in after_ids:
+                    raise ValueError(
+                        f"Pre-existing caption track {prev_track.caption_id!r} "
+                        f"({prev_track.language}) was unexpectedly missing after captions.insert."
+                    )
     except Exception as exc:
         attempt.outcome = PublishOutcome.UNCERTAIN
         attempt.error_message = f"Post-write caption verification failed: {exc}"
@@ -1432,6 +1461,305 @@ async def reconcile_uncertain_asset(
     )
 
 
+async def _batch_publish_metadata_assets(
+    session: AsyncSession,
+    *,
+    video: Video,
+    meta_assets: list[LanguageAsset],
+    actor: str,
+    app_config: AppConfig,
+    settings: Settings,
+    yt_client: YouTubeReadOnlyDataClient,
+    allow_set_default_language: bool,
+    explicit_overwrite_authorized: bool,
+    now: datetime,
+) -> tuple[list[int], list[int], list[int], list[int], dict[int, str], int]:
+    """Publish multiple metadata localizations in one ``videos.update`` call (52 quota units)."""
+    published_ids: list[int] = []
+    skipped_ids: list[int] = []
+    uncertain_ids: list[int] = []
+    failed_ids: list[int] = []
+    blocked_reasons: dict[int, str] = {}
+    quota_used = 0
+
+    # 1. Single pre-write videos.list (1 quota unit for all 47 languages)
+    remote_videos = await yt_client.get_videos([video.youtube_video_id])
+    quota_used += QUOTA_VIDEOS_LIST
+    await record_quota_usage(
+        session,
+        api_method="videos.list",
+        units=QUOTA_VIDEOS_LIST,
+        video_id=video.youtube_video_id,
+        now=now,
+    )
+    if not remote_videos:
+        for asset in meta_assets:
+            failed_ids.append(asset.id)
+            blocked_reasons[asset.id] = f"Video {video.youtube_video_id!r} not found on YouTube."
+        return published_ids, skipped_ids, uncertain_ids, failed_ids, blocked_reasons, quota_used
+
+    remote_before = remote_videos[0]
+    remote_source_hash = remote_before.compute_source_content_hash()
+    if video.source_content_hash and remote_source_hash != video.source_content_hash:
+        drift_msg = (
+            "Source Turkish title or description was modified in YouTube Studio since "
+            "localization ran; re-sync and re-localize before publishing."
+        )
+        for asset in meta_assets:
+            asset.state = AssetState.NEEDS_ATTENTION
+            asset.last_error = drift_msg
+            asset.updated_at = now
+            failed_ids.append(asset.id)
+            blocked_reasons[asset.id] = drift_msg
+        return published_ids, skipped_ids, uncertain_ids, failed_ids, blocked_reasons, quota_used
+
+    merged_localizations: dict[str, dict[str, str]] = {
+        k: {"title": v.get("title", ""), "description": v.get("description", "")}
+        for k, v in remote_before.localizations.items()
+    }
+    to_write: list[tuple[LanguageAsset, str, str, str]] = []
+    any_active_approval = False
+
+    for asset in meta_assets:
+        if not asset.content_hash:
+            continue
+        base_key = compute_publish_idempotency_key(
+            youtube_video_id=video.youtube_video_id,
+            language=asset.language,
+            kind=asset.kind,
+            content_hash=asset.content_hash,
+        )
+        # Check idempotency against prior verified attempt
+        if any(
+            att.idempotency_key.startswith(base_key)
+            and att.outcome is PublishOutcome.SUCCEEDED
+            and att.verified_at is not None
+            for att in asset.publish_attempts
+        ):
+            asset.state = AssetState.PUBLISHED
+            asset.last_error = None
+            asset.updated_at = now
+            published_ids.append(asset.id)
+            continue
+
+        title = (asset.translated_title or "").strip()
+        description = (asset.translated_description or "").strip()
+        val_report = validate_localized_metadata(
+            title,
+            description,
+            source_title=video.source_title,
+            source_description=video.source_description,
+            protected_glossary=app_config.languages.protected_glossary,
+        )
+        if not val_report.passed:
+            asset.validation_passed = False
+            asset.validation_report = val_report.to_dict()
+            asset.state = AssetState.NEEDS_ATTENTION
+            asset.last_error = "Pre-publish metadata validation failed."
+            asset.updated_at = now
+            failed_ids.append(asset.id)
+            blocked_reasons[asset.id] = asset.last_error
+            continue
+
+        existing_loc = _find_matching_localization(remote_before.localizations, asset.language)
+        if (
+            existing_loc is not None
+            and existing_loc.get("title") == title
+            and existing_loc.get("description") == description
+        ):
+            asset.state = AssetState.PUBLISHED
+            asset.last_error = None
+            asset.updated_at = now
+            published_ids.append(asset.id)
+            continue
+
+        active_ap = _find_active_approval(asset)
+        if active_ap is not None:
+            any_active_approval = True
+        has_uncertain = any(
+            att.outcome is PublishOutcome.UNCERTAIN and att.reconciled_at is None
+            for att in asset.publish_attempts
+        )
+        decision = evaluate_publish_decision(
+            app_config.policy,
+            PublishEvaluationInput(
+                language=asset.language,
+                youtube_publishing_enabled=settings.youtube_publishing_enabled,
+                validation_passed=True,
+                review_passed=bool(asset.review_passed),
+                source_ambiguous=bool(asset.source_ambiguous),
+                has_unreconciled_uncertain_attempt=has_uncertain,
+                target_already_exists_on_youtube=existing_loc is not None,
+                content_hash=asset.content_hash,
+                approved_content_hash=(active_ap.approved_content_hash if active_ap else None),
+                explicit_overwrite_authorized=explicit_overwrite_authorized,
+            ),
+        )
+        if not decision.allowed:
+            if decision.reason_code == "target_already_exists":
+                asset.state = AssetState.SKIPPED
+                asset.last_error = decision.message
+                asset.updated_at = now
+                skipped_ids.append(asset.id)
+            else:
+                blocked_reasons[asset.id] = f"{decision.reason_code}: {decision.message}"
+            continue
+
+        prior_attempts = [
+            att
+            for att in asset.publish_attempts
+            if att.idempotency_key == base_key or att.idempotency_key.startswith(f"{base_key}:r")
+        ]
+        idem_key = compute_publish_idempotency_key(
+            youtube_video_id=video.youtube_video_id,
+            language=asset.language,
+            kind=asset.kind,
+            content_hash=asset.content_hash,
+            retry_index=len(prior_attempts),
+        )
+        # Remove any legacy alias key (e.g. 'iw' when writing 'he') so YouTube doesn't 400
+        for alias_code in language_code_aliases(asset.language):
+            for existing_k in list(merged_localizations.keys()):
+                if existing_k.lower() == alias_code:
+                    merged_localizations.pop(existing_k, None)
+        merged_localizations[asset.language.strip()] = {
+            "title": title,
+            "description": description,
+        }
+        to_write.append((asset, title, description, idem_key))
+
+    if not to_write:
+        return published_ids, skipped_ids, uncertain_ids, failed_ids, blocked_reasons, quota_used
+
+    part = "localizations"
+    snippet: dict[str, Any] | None = None
+    if not remote_before.default_language and allow_set_default_language and any_active_approval:
+        preserved_snippet = dict(remote_before.raw_snippet)
+        preserved_snippet["title"] = remote_before.title
+        preserved_snippet["description"] = remote_before.description
+        preserved_snippet["categoryId"] = remote_before.category_id or "22"
+        preserved_snippet["defaultLanguage"] = app_config.languages.source_language.code
+        if remote_before.default_audio_language and "defaultAudioLanguage" not in preserved_snippet:
+            preserved_snippet["defaultAudioLanguage"] = remote_before.default_audio_language
+        part = "snippet,localizations"
+        snippet = preserved_snippet
+
+    batch_req = VideoLocalizationUpdateRequest(
+        video_id=remote_before.video_id,
+        target_language=to_write[0][0].language,
+        part="snippet,localizations" if snippet is not None else "localizations",
+        localizations=merged_localizations,
+        snippet=snippet,
+    )
+    req_digest = compute_publish_request_digest(batch_req.to_api_payload())
+    created_attempts: list[tuple[LanguageAsset, PublishAttempt, str, str]] = []
+    for asset, title, description, idem_key in to_write:
+        asset.state = AssetState.PUBLISHING
+        asset.attempt_count += 1
+        asset.updated_at = now
+        att = PublishAttempt(
+            asset_id=asset.id,
+            idempotency_key=idem_key,
+            operation="videos.update",
+            request_digest=req_digest,
+            outcome=PublishOutcome.UNCERTAIN,
+            response_summary={
+                "part": part,
+                "language": asset.language,
+                "batched_languages_count": len(to_write),
+            },
+            created_at=now,
+        )
+        session.add(att)
+        asset.publish_attempts.append(att)
+        created_attempts.append((asset, att, title, description))
+    await session.flush()
+
+    try:
+        updated_from_put = await yt_client.update_video_localizations(
+            batch_req,
+            publishing_enabled=settings.youtube_publishing_enabled,
+        )
+        quota_used += QUOTA_VIDEOS_UPDATE
+        await record_quota_usage(
+            session,
+            api_method="videos.update",
+            units=QUOTA_VIDEOS_UPDATE,
+            video_id=video.youtube_video_id,
+            now=now,
+        )
+    except Exception as exc:
+        is_uncertain = _is_uncertain_write_exception(exc)
+        for asset, att, _, _ in created_attempts:
+            if is_uncertain:
+                att.outcome = PublishOutcome.UNCERTAIN
+                att.error_message = str(exc)
+                asset.state = AssetState.UNCERTAIN
+                asset.last_error = f"Uncertain outcome during batched videos.update ({exc})."
+                uncertain_ids.append(asset.id)
+            else:
+                att.outcome = PublishOutcome.FAILED
+                att.error_message = str(exc)
+                att.reconciled_at = now
+                asset.state = AssetState.FAILED
+                asset.last_error = str(exc)
+                failed_ids.append(asset.id)
+                blocked_reasons[asset.id] = str(exc)
+            asset.updated_at = now
+        return published_ids, skipped_ids, uncertain_ids, failed_ids, blocked_reasons, quota_used
+
+    # 3. Single post-write videos.list verification (1 quota unit)
+    verify_videos = await yt_client.get_videos([video.youtube_video_id])
+    quota_used += QUOTA_VIDEOS_LIST
+    await record_quota_usage(
+        session,
+        api_method="videos.list",
+        units=QUOTA_VIDEOS_LIST,
+        video_id=video.youtube_video_id,
+        now=now,
+    )
+    remote_after = verify_videos[0] if verify_videos else updated_from_put
+    if isinstance(yt_client, HttpYouTubeDataClient):
+        remote_after = replace(
+            remote_after,
+            localizations={
+                **remote_before.localizations,
+                **updated_from_put.localizations,
+                **remote_after.localizations,
+            },
+        )
+
+    verified_time = _utc_now()
+    video.existing_localizations = dict(remote_after.localizations)
+    for asset, att, title, description in created_attempts:
+        matched = _find_matching_localization(remote_after.localizations, asset.language)
+        if (
+            matched is not None
+            and matched.get("title") == title
+            and matched.get("description") == description
+        ):
+            att.outcome = PublishOutcome.SUCCEEDED
+            att.verified_at = verified_time
+            att.error_message = None
+            att.response_summary = {
+                **att.response_summary,
+                "verified": True,
+            }
+            asset.state = AssetState.PUBLISHED
+            asset.last_error = None
+            asset.updated_at = verified_time
+            published_ids.append(asset.id)
+        else:
+            att.outcome = PublishOutcome.UNCERTAIN
+            att.error_message = f"Target localization {asset.language!r} missing after batch PUT."
+            asset.state = AssetState.UNCERTAIN
+            asset.last_error = att.error_message
+            asset.updated_at = verified_time
+            uncertain_ids.append(asset.id)
+
+    return published_ids, skipped_ids, uncertain_ids, failed_ids, blocked_reasons, quota_used
+
+
 async def publish_ready_assets_for_video(
     session: AsyncSession,
     *,
@@ -1456,6 +1784,7 @@ async def publish_ready_assets_for_video(
     stmt = (
         select(Video)
         .options(
+            selectinload(Video.source_captions),
             selectinload(Video.language_assets).selectinload(LanguageAsset.approvals),
             selectinload(Video.language_assets).selectinload(LanguageAsset.publish_attempts),
         )
@@ -1478,6 +1807,9 @@ async def publish_ready_assets_for_video(
     failed_ids: list[int] = []
     blocked_reasons: dict[int, str] = {}
     total_quota = 0
+
+    ready_meta_assets: list[LanguageAsset] = []
+    ready_caption_assets: list[LanguageAsset] = []
 
     for asset in candidates:
         if lang_filter is not None and asset.language.lower() not in lang_filter:
@@ -1528,7 +1860,71 @@ async def publish_ready_assets_for_video(
 
         if asset.state is not AssetState.READY_TO_PUBLISH:
             continue
+        if asset.kind is AssetKind.METADATA:
+            ready_meta_assets.append(asset)
+        else:
+            ready_caption_assets.append(asset)
 
+    # Batch all metadata localizations into 1 single `videos.update` call (52 quota units total
+    # instead of 47 * 52 = 2,444 units) unless mock per-language outcomes are injected in tests.
+    has_mock_outcomes = bool(getattr(yt_client, "update_video_outcomes", None))
+    if len(ready_meta_assets) > 1 and not has_mock_outcomes:
+        (
+            m_pub,
+            m_skip,
+            m_unc,
+            m_fail,
+            m_blocked,
+            m_quota,
+        ) = await _batch_publish_metadata_assets(
+            session,
+            video=video,
+            meta_assets=ready_meta_assets,
+            actor=actor,
+            app_config=app_config,
+            settings=settings,
+            yt_client=yt_client,
+            allow_set_default_language=allow_set_default_language,
+            explicit_overwrite_authorized=force,
+            now=now,
+        )
+        published_ids.extend(m_pub)
+        skipped_ids.extend(m_skip)
+        uncertain_ids.extend(m_unc)
+        failed_ids.extend(m_fail)
+        blocked_reasons.update(m_blocked)
+        total_quota += m_quota
+        remaining_individual_assets = ready_caption_assets
+    else:
+        remaining_individual_assets = [*ready_meta_assets, *ready_caption_assets]
+
+    # Share a single pre-batch `captions.list` call (50 units once instead of 50 units * 47 langs)
+    shared_caption_tracks: list[YouTubeCaptionTrackResource] | None = None
+    if ready_caption_assets and isinstance(yt_client, HttpYouTubeDataClient):
+        try:
+            shared_caption_tracks = await yt_client.list_captions(
+                CaptionListParams(video_id=video.youtube_video_id)
+            )
+            total_quota += QUOTA_CAPTIONS_LIST
+            await record_quota_usage(
+                session,
+                api_method="captions.list",
+                units=QUOTA_CAPTIONS_LIST,
+                video_id=video.youtube_video_id,
+                now=now,
+            )
+        except YouTubeApiError as exc:
+            if "quotaexceeded" in str(exc).lower() or exc.http_status in (403, 429):
+                for cap_asset in ready_caption_assets:
+                    blocked_reasons[cap_asset.id] = (
+                        "youtube_quota_exceeded: Daily YouTube API quota reached before "
+                        "caption upload; asset kept in ready_to_publish for next run."
+                    )
+                remaining_individual_assets = [
+                    a for a in remaining_individual_assets if a.kind is not AssetKind.CAPTION
+                ]
+
+    for asset in remaining_individual_assets:
         try:
             res = await publish_language_asset(
                 session,
@@ -1540,6 +1936,9 @@ async def publish_ready_assets_for_video(
                 is_draft=is_draft,
                 allow_set_default_language=allow_set_default_language,
                 explicit_overwrite_authorized=force,
+                cached_remote_tracks_before=(
+                    shared_caption_tracks if asset.kind is AssetKind.CAPTION else None
+                ),
             )
             total_quota += res.quota_units_used
             if res.asset.state is AssetState.PUBLISHED:
@@ -1549,10 +1948,30 @@ async def publish_ready_assets_for_video(
             elif res.asset.state is AssetState.UNCERTAIN:
                 uncertain_ids.append(asset.id)
             else:
+                err_lower = (res.asset.last_error or "").lower()
+                if "quotaexceeded" in err_lower or "dailylimitexceeded" in err_lower:
+                    # Keep this and all remaining assets in READY_TO_PUBLISH to resume cleanly!
+                    asset.state = AssetState.READY_TO_PUBLISH
+                    asset.last_error = (
+                        "Paused: Daily YouTube API quota reached; ready to resume on next run."
+                    )
+                    asset.updated_at = now
+                    blocked_reasons[asset.id] = (
+                        "youtube_quota_exceeded: Daily YouTube API quota reached; "
+                        "remaining tracks kept in ready_to_publish."
+                    )
+                    break
                 failed_ids.append(asset.id)
         except PublishPolicyBlockedError as exc:
             blocked_reasons[asset.id] = f"{exc.decision.reason_code}: {exc.decision.message}"
         except Exception as exc:
+            if "quotaexceeded" in str(exc).lower():
+                asset.state = AssetState.READY_TO_PUBLISH
+                blocked_reasons[asset.id] = (
+                    "youtube_quota_exceeded: Daily YouTube API quota reached; "
+                    "remaining tracks kept in ready_to_publish."
+                )
+                break
             failed_ids.append(asset.id)
             blocked_reasons[asset.id] = str(exc)
 
