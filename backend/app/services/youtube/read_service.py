@@ -808,8 +808,7 @@ async def get_today_quota_used(session: AsyncSession, *, now: datetime | None = 
     current = now or datetime.now(_PACIFIC_TZ)
     pt_date = current.astimezone(_PACIFIC_TZ).date()
     stmt = select(func.coalesce(func.sum(QuotaLedger.units), 0)).where(
-        QuotaLedger.organization_id == LEGACY_ORGANIZATION_ID,
-        QuotaLedger.quota_date_pt == pt_date
+        QuotaLedger.organization_id == LEGACY_ORGANIZATION_ID, QuotaLedger.quota_date_pt == pt_date
     )
     total = (await session.execute(stmt)).scalar_one()
     return int(total)

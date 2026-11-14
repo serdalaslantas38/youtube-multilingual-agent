@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0002_tenant_ownership"
@@ -73,9 +74,7 @@ def upgrade() -> None:
         "organization_members",
         ["organization_id"],
     )
-    op.create_index(
-        op.f("ix_organization_members_user_id"), "organization_members", ["user_id"]
-    )
+    op.create_index(op.f("ix_organization_members_user_id"), "organization_members", ["user_id"])
 
     op.bulk_insert(
         sa.table(
@@ -149,14 +148,13 @@ def upgrade() -> None:
 
     for table in OWNED_TABLES:
         op.add_column(table, sa.Column("organization_id", sa.String(36), nullable=True))
-        op.execute(
-            sa.text(f"UPDATE {table} SET organization_id = :org_id")
-            .bindparams(org_id=LEGACY_ORGANIZATION_ID)
+        legacy_table = sa.table(
+            table,
+            sa.column("organization_id", sa.String(36)),
         )
+        op.execute(legacy_table.update().values(organization_id=LEGACY_ORGANIZATION_ID))
         with op.batch_alter_table(table) as batch:
-            batch.alter_column(
-                "organization_id", existing_type=sa.String(36), nullable=False
-            )
+            batch.alter_column("organization_id", existing_type=sa.String(36), nullable=False)
             batch.create_foreign_key(
                 f"fk_{table}_organization_id_organizations",
                 "organizations",
@@ -169,9 +167,7 @@ def upgrade() -> None:
                 batch.create_unique_constraint(
                     "uq_jobs_org_dedupe_key", ["organization_id", "dedupe_key"]
                 )
-        op.create_index(
-            f"ix_{table}_organization_id", table, ["organization_id"], unique=False
-        )
+        op.create_index(f"ix_{table}_organization_id", table, ["organization_id"], unique=False)
 
 
 def downgrade() -> None:

@@ -273,18 +273,17 @@ def test_tenant_migration_backfills_existing_jobs(tmp_path: Path, repo_root: Pat
         with sync_engine.connect() as connection:
             org_id = connection.execute(
                 sa.text(
-                    "SELECT organization_id FROM jobs "
-                    "WHERE dedupe_key = 'process_video:legacy'"
+                    "SELECT organization_id FROM jobs WHERE dedupe_key = 'process_video:legacy'"
                 )
             ).scalar_one()
             assert org_id == "00000000-0000-4000-8000-000000000001"
             constraints = inspect(sync_engine).get_unique_constraints("jobs")
             assert any(
-                item["column_names"] == ["organization_id", "dedupe_key"]
-                for item in constraints
+                item["column_names"] == ["organization_id", "dedupe_key"] for item in constraints
             )
     finally:
         sync_engine.dispose()
+
 
 async def test_duplicate_video_notifications_are_deduplicated(
     db_session: AsyncSession,

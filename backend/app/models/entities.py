@@ -68,8 +68,7 @@ class ChannelConnection(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
-        index=True
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     youtube_channel_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     channel_title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -104,8 +103,7 @@ class Video(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
-        index=True
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     youtube_video_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     youtube_channel_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -315,8 +313,7 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
-        index=True
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     dedupe_key: Mapped[str] = mapped_column(String(160), nullable=False)
     job_type: Mapped[JobType] = mapped_column(_enum_col(JobType), nullable=False, index=True)
@@ -344,8 +341,7 @@ class QuotaLedger(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
-        index=True
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     quota_date_pt: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     api_method: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -362,8 +358,7 @@ class AuditEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(
-        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
-        index=True
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     actor: Mapped[str] = mapped_column(String(320), nullable=False)
     action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

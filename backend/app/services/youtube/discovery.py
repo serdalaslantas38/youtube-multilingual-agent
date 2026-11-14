@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_config import LanguagesConfig
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.models.entities import ChannelConnection, SourceCaptionTrack, Video
 from app.models.enums import ChannelConnectionStatus, VideoWorkflowState
 from app.services.validation.validators import (

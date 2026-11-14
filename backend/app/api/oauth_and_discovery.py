@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.app_config import AppConfig
 from app.core.crypto import TokenEncryptionError
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.models.entities import SourceCaptionTrack, Video
 from app.schemas.youtube import (
     ChannelStatusResponse,
