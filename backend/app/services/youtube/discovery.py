@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_config import LanguagesConfig
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
+from app.core.tenancy import LEGACY_ORGANIZATION_ID, current_organization_id
 from app.core.settings import Settings
 from app.models.entities import ChannelConnection, SourceCaptionTrack, Video
 from app.models.enums import ChannelConnectionStatus, VideoWorkflowState
@@ -55,6 +55,10 @@ class ChannelBindingMismatchError(PermissionError):
     """Raised when the OAuth-authenticated channel does not match `YOUTUBE_CHANNEL_ID`."""
 
 
+class ChannelOwnershipConflictError(PermissionError):
+    """Raised when a channel is already owned by another organization."""
+
+
 class ChannelNotConnectedError(RuntimeError):
     """Raised when an operation requires an active `ChannelConnection` but none exists."""
 
@@ -70,7 +74,13 @@ async def upsert_authorized_channel_connection(
     now: datetime | None = None,
 ) -> ChannelConnection:
     """Verify channel binding, encrypt the refresh token, and upsert `ChannelConnection`."""
-    expected_channel = settings.youtube_channel_id.strip()
+    # Keep the historical deployment pin for the backfilled workspace. New
+    # organizations authorize and own their selected channel independently.
+    expected_channel = (
+        settings.youtube_channel_id.strip()
+        if current_organization_id() == LEGACY_ORGANIZATION_ID
+        else ""
+    )
     if expected_channel and identity.channel_id != expected_channel:
         raise ChannelBindingMismatchError(
             f"Authenticated YouTube channel {identity.channel_id!r} ({identity.title!r}) "
@@ -79,11 +89,23 @@ async def upsert_authorized_channel_connection(
             "channel during Google OAuth consent."
         )
 
-    encrypted_token = encrypt_secret(refresh_token, settings.encryption_key)
     current = now or datetime.now(UTC)
+    tenant_id = current_organization_id()
+    global_owner = (
+        await session.execute(
+            select(ChannelConnection).where(
+                ChannelConnection.youtube_channel_id == identity.channel_id
+            )
+        )
+    ).scalar_one_or_none()
+    if global_owner is not None and global_owner.organization_id != tenant_id:
+        raise ChannelOwnershipConflictError(
+            "This YouTube channel is already connected to another organization."
+        )
+    encrypted_token = encrypt_secret(refresh_token, settings.encryption_key)
 
     stmt = select(ChannelConnection).where(
-        ChannelConnection.organization_id == LEGACY_ORGANIZATION_ID,
+        ChannelConnection.organization_id == tenant_id,
         ChannelConnection.youtube_channel_id == identity.channel_id,
     )
     conn = (await session.execute(stmt)).scalar_one_or_none()
@@ -93,7 +115,7 @@ async def upsert_authorized_channel_connection(
     )
     if conn is None:
         conn = ChannelConnection(
-            organization_id=LEGACY_ORGANIZATION_ID,
+            organization_id=tenant_id,
             youtube_channel_id=identity.channel_id,
             channel_title=identity.title,
             custom_url=identity.custom_url,
@@ -139,7 +161,7 @@ async def get_active_channel_connection(
     """Return the stored `ChannelConnection` (filtered by `expected_channel_id` if given)."""
     stmt = (
         select(ChannelConnection)
-        .where(ChannelConnection.organization_id == LEGACY_ORGANIZATION_ID)
+        .where(ChannelConnection.organization_id == current_organization_id())
         .order_by(ChannelConnection.updated_at.desc())
     )
     if expected_channel_id.strip():
@@ -154,9 +176,12 @@ async def mint_access_token_for_channel(
     token_client: OAuthTokenClient,
 ) -> tuple[ChannelConnection, str]:
     """Decrypt the stored refresh token and mint a fresh OAuth access token."""
-    conn = await get_active_channel_connection(
-        session, expected_channel_id=settings.youtube_channel_id
+    expected_channel = (
+        settings.youtube_channel_id
+        if current_organization_id() == LEGACY_ORGANIZATION_ID
+        else ""
     )
+    conn = await get_active_channel_connection(session, expected_channel_id=expected_channel)
     if conn is None:
         raise ChannelNotConnectedError(
             "No YouTube channel is connected yet. Visit /auth/google/start to authorize."
@@ -189,7 +214,7 @@ async def upsert_video_from_youtube_resource(
     """Idempotently create or update a `Video` row from a `YouTubeVideoResource`."""
     current = now or datetime.now(UTC)
     stmt = select(Video).where(
-        Video.organization_id == LEGACY_ORGANIZATION_ID,
+        Video.organization_id == current_organization_id(),
         Video.youtube_video_id == resource.video_id,
     )
     video = (await session.execute(stmt)).scalar_one_or_none()
@@ -197,7 +222,7 @@ async def upsert_video_from_youtube_resource(
 
     if video is None:
         video = Video(
-            organization_id=LEGACY_ORGANIZATION_ID,
+            organization_id=current_organization_id(),
             youtube_video_id=resource.video_id,
             youtube_channel_id=resource.channel_id,
             source_language=source_language,
@@ -356,7 +381,7 @@ async def inspect_and_persist_video_captions(
     """Fetch video metadata (if needed) and inspect its caption tracks via `captions.list`."""
     current = now or datetime.now(UTC)
     stmt = select(Video).where(
-        Video.organization_id == LEGACY_ORGANIZATION_ID,
+        Video.organization_id == current_organization_id(),
         Video.youtube_video_id == youtube_video_id,
     )
     video = (await session.execute(stmt)).scalar_one_or_none()

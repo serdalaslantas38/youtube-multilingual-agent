@@ -26,7 +26,7 @@ from app.agents.metadata_localizer import MetadataLocalizerAgent
 from app.agents.quality_reviewer import QualityReviewerAgent
 from app.core.app_config import AppConfig, PublishMode, TargetLanguage
 from app.core.settings import Settings
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
+from app.core.tenancy import current_organization_id
 from app.models.entities import LanguageAsset, SourceCaptionTrack, Video
 from app.models.enums import (
     AssetKind,
@@ -95,7 +95,7 @@ async def _get_or_create_language_asset(
 ) -> LanguageAsset:
     now = _utc_now()
     stmt = select(LanguageAsset).where(
-        LanguageAsset.video.has(Video.organization_id == LEGACY_ORGANIZATION_ID),
+        LanguageAsset.video.has(Video.organization_id == current_organization_id()),
         LanguageAsset.video_id == video_id,
         LanguageAsset.language == language,
         LanguageAsset.kind == kind,
@@ -238,7 +238,7 @@ async def localize_video_assets(
         select(Video)
         .options(selectinload(Video.source_captions), selectinload(Video.language_assets))
         .where(
-            Video.organization_id == LEGACY_ORGANIZATION_ID,
+            Video.organization_id == current_organization_id(),
             Video.youtube_video_id == youtube_video_id,
         )
     )
@@ -594,7 +594,7 @@ async def localize_video_assets(
     # Refresh assets and compute overall video workflow state
     assets_stmt = (
         select(LanguageAsset)
-        .where(LanguageAsset.video.has(Video.organization_id == LEGACY_ORGANIZATION_ID))
+        .where(LanguageAsset.video.has(Video.organization_id == current_organization_id()))
         .where(LanguageAsset.video_id == video.id)
         .order_by(LanguageAsset.language.asc(), LanguageAsset.kind.asc())
     )

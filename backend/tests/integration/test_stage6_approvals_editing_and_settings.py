@@ -26,6 +26,7 @@ from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_SRT,
     GOLDEN_TURKISH_TITLE,
 )
+from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 
@@ -53,6 +54,7 @@ async def test_approval_hash_binding_and_edit_invalidation_workflow(
 ) -> None:
     settings = _make_settings(tmp_path, config_dir)
     app = create_app(settings)
+    authorize_test_app(app)
 
     fake_llm = FakeStructuredLLMClient()
     mock_captions = MockYouTubeCaptionClient()
@@ -212,7 +214,7 @@ async def test_approval_hash_binding_and_edit_invalidation_workflow(
             assert "asset.rejected" in actions
 
 
-async def test_per_language_policy_settings_and_allowlist_auth(
+async def test_per_language_policy_settings_authenticated_admin(
     tmp_path: Path,
     config_dir: Path,
 ) -> None:
@@ -222,30 +224,12 @@ async def test_per_language_policy_settings_and_allowlist_auth(
         allowed_emails=["belkiz@example.com", "serdal@example.com"],
     )
     app = create_app(settings)
+    authorize_test_app(app, role="owner")
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # 1. Unauthenticated request is rejected when DASHBOARD_ALLOWED_EMAILS is set
-            unauth = await client.get("/api/settings/policy")
-            assert unauth.status_code == 401
-
-            # 2. Non-allowlisted email is rejected with 403 Forbidden
-            bad_login = await client.post(
-                "/api/dashboard/auth/login",
-                json={"email": "intruder@example.com"},
-            )
-            assert bad_login.status_code == 403
-
-            # 3. Allowlisted email signs in and receives session cookie
-            ok_login = await client.post(
-                "/api/dashboard/auth/login",
-                json={"email": "belkiz@example.com"},
-            )
-            assert ok_login.status_code == 200
-            assert ok_login.json()["authenticated"] is True
-
-            # 4. Update Spanish ('es') mode to auto_after_validation and add Portuguese ('pt')
+            # 1. Update Spanish ('es') mode to auto_after_validation and add Portuguese ('pt')
             upd_es = await client.put(
                 "/api/settings/policy/languages/es",
                 json={"mode": "auto_after_validation", "enabled": True},
@@ -270,7 +254,7 @@ async def test_per_language_policy_settings_and_allowlist_auth(
             codes = [item["code"] for item in add_pt.json()["languages"]]
             assert "pt" in codes
 
-            # 5. Toggle global auto_publish_enabled (audited)
+            # 2. Toggle global auto_publish_enabled (audited)
             upd_global = await client.put(
                 "/api/settings/policy/global",
                 json={

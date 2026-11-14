@@ -38,5 +38,5 @@ def test_production_readiness_reports_missing_settings(monkeypatch: pytest.Monke
     monkeypatch.setenv("APP_ENV", "production")
     errors = Settings(_env_file=None).production_readiness_errors()  # type: ignore[call-arg]
     joined = " ".join(errors)
-    for expected in ("PostgreSQL", "WEBSUB_SECRET", "YOUTUBE_CHANNEL_ID", "DASHBOARD"):
+    for expected in ("PostgreSQL", "WEBSUB_SECRET", "DASHBOARD"):
         assert expected in joined

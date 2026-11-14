@@ -28,6 +28,7 @@ from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_TITLE,
     GOLDEN_YOUTUBE_TLANG_EN_QUIRK_SRT,
 )
+from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 
@@ -49,6 +50,7 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
 ) -> None:
     settings = _make_test_settings(tmp_path, config_dir)
     app = create_app(settings)
+    authorize_test_app(app)
 
     fake_llm = FakeStructuredLLMClient()
     mock_captions = MockYouTubeCaptionClient()
@@ -204,6 +206,7 @@ async def test_localize_video_transitions_to_needs_attention_on_source_ambiguity
 ) -> None:
     settings = _make_test_settings(tmp_path, config_dir)
     app = create_app(settings)
+    authorize_test_app(app)
 
     fake_llm = FakeStructuredLLMClient(
         scripted_responses=[

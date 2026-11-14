@@ -19,7 +19,7 @@ from app.core.app_config import (
     TargetLanguage,
 )
 from app.core.settings import Settings
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
+from app.core.tenancy import current_organization_id
 from app.models.entities import (
     Approval,
     AuditEvent,
@@ -68,7 +68,7 @@ async def record_audit_event(
 ) -> AuditEvent:
     """Append an immutable entry to the `audit_events` table."""
     event = AuditEvent(
-        organization_id=LEGACY_ORGANIZATION_ID,
+        organization_id=current_organization_id(),
         actor=actor,
         action=action,
         target_type=target_type,
@@ -89,7 +89,7 @@ async def resolve_effective_app_config(
     stmt = (
         select(AuditEvent)
         .where(
-            AuditEvent.organization_id == LEGACY_ORGANIZATION_ID,
+            AuditEvent.organization_id == current_organization_id(),
             AuditEvent.target_type.in_(("language_policy", "global_policy")),
         )
         .order_by(AuditEvent.id.asc())
@@ -302,7 +302,7 @@ async def _load_asset_with_relations(
         )
         .where(
             LanguageAsset.id == asset_id,
-            LanguageAsset.video.has(Video.organization_id == LEGACY_ORGANIZATION_ID),
+            LanguageAsset.video.has(Video.organization_id == current_organization_id()),
         )
     )
     asset = (await session.execute(stmt)).scalar_one_or_none()

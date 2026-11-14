@@ -86,6 +86,15 @@ Language assets are tracked separately for **metadata** (title+description) and
 
 ## 4. Core data model (Stage 2)
 
+SaaS identity is separate from YouTube authorization: `user` is keyed by verified
+OIDC issuer/subject; `organization` owns customer workflow data; and
+`organization_member` grants a user an organization role. `user_session` stores a
+hash of the opaque browser token, its CSRF token, expiry/revocation, and active
+organization. `oidc_login_attempt` stores short-lived state, nonce, and PKCE
+material for the login callback. API requests bind the active organization only
+after validating the session and membership. YouTube refresh tokens remain on
+`channel_connection`, encrypted and scoped to their owning organization.
+
 - `channel_connection` — channel id, channel title, custom url, uploads playlist id, encrypted refresh token, scopes, status (`connected`, `token_expired`, `revoked`, `error`).
 - `video` — YouTube id, channel id, source title/description snapshot + hash, default language, privacy status (`public`, `private`, `unlisted`), scheduled `publish_at` (`status.publishAt` for scheduled videos), source caption availability state, workflow status (`discovered`, `awaiting_source`, `source_ready`, `processing`, `completed`, `needs_attention`, `failed`), discovered_at.
   - **Privacy & scheduling safeguard:** The system supports both immediately public videos and private/scheduled videos so localization can complete before `publish_at` when possible. **The application never modifies `status.privacyStatus` or `status.publishAt` under any circumstance.**

@@ -40,7 +40,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.app_config import AppConfig
 from app.core.settings import Settings
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
+from app.core.tenancy import current_organization_id
 from app.models.entities import (
     Approval,
     LanguageAsset,
@@ -1790,7 +1790,7 @@ async def publish_ready_assets_for_video(
             selectinload(Video.language_assets).selectinload(LanguageAsset.publish_attempts),
         )
         .where(
-            Video.organization_id == LEGACY_ORGANIZATION_ID,
+            Video.organization_id == current_organization_id(),
             Video.youtube_video_id == youtube_video_id,
         )
     )
@@ -2003,7 +2003,7 @@ async def list_video_publish_history(
         .join(LanguageAsset, PublishAttempt.asset_id == LanguageAsset.id)
         .join(Video, LanguageAsset.video_id == Video.id)
         .where(
-            Video.organization_id == LEGACY_ORGANIZATION_ID,
+            Video.organization_id == current_organization_id(),
             Video.youtube_video_id == youtube_video_id,
         )
         .order_by(PublishAttempt.id.desc())

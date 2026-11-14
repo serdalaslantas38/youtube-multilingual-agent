@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.approvals_and_settings import require_dashboard_operator
+from app.api.dependencies import AdminAccess, CurrentIdentity, ViewerAccess
 from app.core.app_config import AppConfig
 from app.core.settings import Settings
 from app.schemas.publishing import (
@@ -86,7 +86,7 @@ async def _resolve_yt_client(
 async def publish_asset_endpoint(
     request: Request,
     asset_id: int,
-    operator: Annotated[str, Depends(require_dashboard_operator)],
+    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
     body: Annotated[PublishAssetRequest | None, Body()] = None,
 ) -> PublishAssetResponse:
     """Publish a single approved/eligible asset to YouTube with post-write verification."""
@@ -102,7 +102,7 @@ async def publish_asset_endpoint(
             result = await publish_language_asset(
                 session,
                 asset_id=asset_id,
-                actor=operator,
+                actor=identity.email,
                 app_config=effective_cfg,
                 settings=settings,
                 yt_client=yt_client,
@@ -141,7 +141,7 @@ async def publish_asset_endpoint(
 async def reconcile_asset_endpoint(
     request: Request,
     asset_id: int,
-    operator: Annotated[str, Depends(require_dashboard_operator)],
+    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
     body: Annotated[ReconcileAssetRequest | None, Body()] = None,
 ) -> PublishAssetResponse:
     """Reconcile an uncertain publish outcome by reading live YouTube state before any retry."""
@@ -157,7 +157,7 @@ async def reconcile_asset_endpoint(
             result = await reconcile_uncertain_asset(
                 session,
                 asset_id=asset_id,
-                actor=operator,
+                actor=identity.email,
                 app_config=effective_cfg,
                 settings=settings,
                 yt_client=yt_client,
@@ -186,7 +186,7 @@ async def reconcile_asset_endpoint(
 async def publish_ready_assets_for_video_endpoint(
     request: Request,
     youtube_video_id: str,
-    operator: Annotated[str, Depends(require_dashboard_operator)],
+    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
     body: Annotated[BatchPublishVideoRequest | None, Body()] = None,
 ) -> BatchPublishVideoResponse:
     """Publish all `ready_to_publish` assets for a video."""
@@ -202,7 +202,7 @@ async def publish_ready_assets_for_video_endpoint(
             result = await publish_ready_assets_for_video(
                 session,
                 youtube_video_id=youtube_video_id,
-                actor=operator,
+                actor=identity.email,
                 app_config=effective_cfg,
                 settings=settings,
                 yt_client=yt_client,
@@ -230,7 +230,7 @@ async def publish_ready_assets_for_video_endpoint(
 async def list_video_publish_attempts_endpoint(
     request: Request,
     youtube_video_id: str,
-    _operator: Annotated[str, Depends(require_dashboard_operator)],
+    _identity: Annotated[CurrentIdentity, Depends(ViewerAccess)],
 ) -> list[VideoPublishHistoryItem]:
     """Return chronological publish attempt history for a video."""
     session_factory = _get_session_factory(request)

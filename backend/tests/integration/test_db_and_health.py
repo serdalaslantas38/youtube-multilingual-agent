@@ -40,6 +40,7 @@ from app.tasks import (
     record_job_failure_and_schedule_retry,
     reset_job_for_manual_retry,
 )
+from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 
@@ -47,6 +48,8 @@ EXPECTED_TABLES = {
     "users",
     "organizations",
     "organization_members",
+    "user_sessions",
+    "oidc_login_attempts",
     "channel_connections",
     "videos",
     "source_caption_tracks",
@@ -172,6 +175,7 @@ async def test_legacy_video_endpoints_do_not_expose_another_organization(
         youtube_publishing_enabled=False,
     )
     app = create_app(settings)
+    authorize_test_app(app)
 
     async with app.router.lifespan_context(app):
         now = datetime.now(UTC)
@@ -295,6 +299,7 @@ async def test_duplicate_video_notifications_are_deduplicated(
         youtube_video_id="vid_tr_001",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     await db_session.commit()
@@ -307,6 +312,7 @@ async def test_duplicate_video_notifications_are_deduplicated(
         youtube_video_id="vid_tr_001",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     await db_session.commit()
@@ -326,6 +332,7 @@ async def test_notification_for_unauthorized_channel_is_rejected(
             youtube_video_id="vid_other",
             youtube_channel_id="UC_STRANGER",
             authorized_channel_id="UC_TURKISH_CHANNEL",
+            organization_id=LEGACY_ORGANIZATION_ID,
         )
 
 
@@ -393,6 +400,7 @@ async def test_job_and_language_asset_explicit_states_and_safe_retries(
         youtube_video_id="vid_retry_01",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     job = res.job

@@ -10,14 +10,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from app.api.dependencies import CurrentIdentity, EditorAccess, ViewerAccess
 from app.core.app_config import AppConfig, aload_app_config
 from app.core.settings import Settings
-from app.core.tenancy import LEGACY_ORGANIZATION_ID
+from app.core.tenancy import current_organization_id
 from app.models.entities import LanguageAsset, Video
 from app.orchestration.localization import _asset_to_summary, localize_video_assets
 from app.schemas.localization import (
@@ -66,6 +67,7 @@ def _build_yt_client(request: Request, access_token: str) -> YouTubeReadOnlyData
 async def get_video_localized_assets(
     request: Request,
     youtube_video_id: str,
+    _identity: Annotated[CurrentIdentity, Depends(ViewerAccess)],
 ) -> VideoLocalizationResponse:
     """Return all localized metadata and caption assets for a discovered video."""
     app_cfg: AppConfig = request.app.state.app_config
@@ -75,7 +77,7 @@ async def get_video_localized_assets(
             select(Video)
             .options(selectinload(Video.source_captions), selectinload(Video.language_assets))
             .where(
-                Video.organization_id == LEGACY_ORGANIZATION_ID,
+                Video.organization_id == current_organization_id(),
                 Video.youtube_video_id == youtube_video_id,
             )
         )
@@ -130,6 +132,7 @@ async def get_video_localized_assets(
 async def localize_video_endpoint(
     request: Request,
     youtube_video_id: str,
+    _identity: Annotated[CurrentIdentity, Depends(EditorAccess)],
     body: Annotated[LocalizeVideoRequest | None, Body()] = None,
 ) -> VideoLocalizationResponse:
     """Run Stage 5 localization, fallback caption translation, validation, and review."""
@@ -160,7 +163,7 @@ async def localize_video_endpoint(
                     select(Video)
                     .options(selectinload(Video.source_captions))
                     .where(
-                        Video.organization_id == LEGACY_ORGANIZATION_ID,
+                        Video.organization_id == current_organization_id(),
                         Video.youtube_video_id == youtube_video_id,
                     )
                 )

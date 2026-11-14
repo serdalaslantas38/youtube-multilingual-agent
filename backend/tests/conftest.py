@@ -8,7 +8,7 @@ can accidentally fall through to the real YouTube API.
 from __future__ import annotations
 
 import socket
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,33 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = REPO_ROOT / "config"
+
+
+def authorize_test_app(app: Any, *, role: str = "owner") -> None:
+    """Inject a fixed authenticated test principal for legacy workflow integration tests."""
+    from app.api.dependencies import CurrentIdentity, require_current_principal
+    from app.core.tenancy import (
+        LEGACY_ORGANIZATION_ID,
+        bind_organization_id,
+        reset_organization_id,
+    )
+
+    async def test_principal() -> AsyncIterator[CurrentIdentity]:
+        token = bind_organization_id(LEGACY_ORGANIZATION_ID)
+        try:
+            yield CurrentIdentity(
+                user_id="test-user",
+                email="test-owner@example.test",
+                session_id=1,
+                csrf_token="test-csrf-token",
+                organization_id=LEGACY_ORGANIZATION_ID,
+                organization_name="Legacy Workspace",
+                role=role,
+            )
+        finally:
+            reset_organization_id(token)
+
+    app.dependency_overrides[require_current_principal] = test_principal
 
 _SENSITIVE_ENV = (
     "GOOGLE_CLIENT_ID",
