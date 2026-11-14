@@ -25,6 +25,7 @@ from app.services.youtube import (
     YouTubeVideoResource,
 )
 from scripts.poc.caption_diagnostics import build_demo_mock_client
+from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 
@@ -138,6 +139,7 @@ async def test_full_oauth_video_discovery_and_caption_inspection_flow(
 ) -> None:
     settings = _build_test_settings(tmp_path, config_dir, channel_id="UC_WIFE_TR")
     app = create_app(settings)
+    authorize_test_app(app)
     mock_yt = _build_mock_yt_client("UC_WIFE_TR")
 
     app.state.oauth_token_client = FakeOAuthTokenClient()
@@ -220,6 +222,7 @@ async def test_oauth_callback_rejects_mismatched_channel_id(
     # Configured for UC_WIFE_TR, but user accidentally selects personal channel UC_WRONG_PERSONAL
     settings = _build_test_settings(tmp_path, config_dir, channel_id="UC_WIFE_TR")
     app = create_app(settings)
+    authorize_test_app(app)
     wrong_yt = _build_mock_yt_client("UC_WRONG_PERSONAL")
 
     app.state.oauth_token_client = FakeOAuthTokenClient()

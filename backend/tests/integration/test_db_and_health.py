@@ -6,6 +6,7 @@ import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from alembic.config import Config
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from alembic import command
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.db.session import Base, create_engine, create_session_factory
 from app.main import create_app
 from app.models import (
@@ -24,6 +26,7 @@ from app.models import (
     Job,
     JobState,
     LanguageAsset,
+    Organization,
     SourceCaptionStatus,
     SourceCaptionTrack,
     SourceCaptionTrackKind,
@@ -37,10 +40,16 @@ from app.tasks import (
     record_job_failure_and_schedule_retry,
     reset_job_for_manual_retry,
 )
+from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 
 EXPECTED_TABLES = {
+    "users",
+    "organizations",
+    "organization_members",
+    "user_sessions",
+    "oidc_login_attempts",
     "channel_connections",
     "videos",
     "source_caption_tracks",
@@ -78,6 +87,23 @@ async def db_session(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIte
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+
+    from app.core.tenancy import LEGACY_ORGANIZATION_ID, LEGACY_ORGANIZATION_SLUG
+
+    now = datetime.now(UTC)
+    async with AsyncSession(engine) as seed_session:
+        seed_session.add(
+            Organization(
+                id=LEGACY_ORGANIZATION_ID,
+                name="Legacy Workspace",
+                slug=LEGACY_ORGANIZATION_SLUG,
+                is_legacy=True,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await seed_session.commit()
 
     factory = create_session_factory(engine)
     async with factory() as session:
@@ -138,6 +164,61 @@ async def test_health_and_readiness_endpoints(tmp_path: Path, config_dir: Path) 
             assert r_body["checks"]["config"] is True
 
 
+async def test_legacy_video_endpoints_do_not_expose_another_organization(
+    tmp_path: Path, config_dir: Path
+) -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        app_env=AppEnv.TEST,
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'tenant-api.db'}",
+        config_dir=config_dir,
+        youtube_publishing_enabled=False,
+    )
+    app = create_app(settings)
+    authorize_test_app(app)
+
+    async with app.router.lifespan_context(app):
+        now = datetime.now(UTC)
+        foreign_org_id = str(uuid4())
+        async with app.state.session_factory() as session:
+            session.add(
+                Organization(
+                    id=foreign_org_id,
+                    name="Other Workspace",
+                    slug=f"other-{foreign_org_id[:8]}",
+                    is_legacy=False,
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                Video(
+                    organization_id=foreign_org_id,
+                    youtube_video_id="foreignvid01",
+                    youtube_channel_id="foreign-channel",
+                    source_language="tr",
+                    source_title="Private workspace video",
+                    source_description="",
+                    source_content_hash="sha256:foreign",
+                    privacy_status=VideoPrivacyStatus.PRIVATE,
+                    workflow_state=VideoWorkflowState.DISCOVERED,
+                    existing_localizations={},
+                    discovered_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            listed = await client.get("/api/videos")
+            assert listed.status_code == 200
+            assert "foreignvid01" not in {row["youtube_video_id"] for row in listed.json()}
+            detail = await client.get("/api/videos/foreignvid01/assets")
+            assert detail.status_code == 404
+
+
 def test_alembic_upgrade_and_downgrade_sqlite(tmp_path: Path, repo_root: Path) -> None:
     db_file = tmp_path / "alembic_test.db"
     db_url = f"sqlite+aiosqlite:///{db_file}"
@@ -166,6 +247,48 @@ def test_alembic_upgrade_and_downgrade_sqlite(tmp_path: Path, repo_root: Path) -
         sync_engine.dispose()
 
 
+def test_tenant_migration_backfills_existing_jobs(tmp_path: Path, repo_root: Path) -> None:
+    db_file = tmp_path / "tenant_backfill.db"
+    db_url = f"sqlite+aiosqlite:///{db_file}"
+    alembic_cfg = Config(str(repo_root / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(repo_root / "backend" / "alembic"))
+    alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(alembic_cfg, "0001_initial_schema")
+
+    import sqlalchemy as sa
+
+    sync_engine = sa.create_engine(f"sqlite:///{db_file}")
+    try:
+        with sync_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO jobs (dedupe_key, job_type, state, payload, attempt_count, "
+                    "max_attempts, next_run_at, created_at, updated_at) VALUES "
+                    "('process_video:legacy', 'process_video', 'queued', '{}', 0, 5, "
+                    "'2026-01-01 00:00:00', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                )
+            )
+    finally:
+        sync_engine.dispose()
+
+    command.upgrade(alembic_cfg, "head")
+    sync_engine = sa.create_engine(f"sqlite:///{db_file}")
+    try:
+        with sync_engine.connect() as connection:
+            org_id = connection.execute(
+                sa.text(
+                    "SELECT organization_id FROM jobs WHERE dedupe_key = 'process_video:legacy'"
+                )
+            ).scalar_one()
+            assert org_id == "00000000-0000-4000-8000-000000000001"
+            constraints = inspect(sync_engine).get_unique_constraints("jobs")
+            assert any(
+                item["column_names"] == ["organization_id", "dedupe_key"] for item in constraints
+            )
+    finally:
+        sync_engine.dispose()
+
+
 async def test_duplicate_video_notifications_are_deduplicated(
     db_session: AsyncSession,
 ) -> None:
@@ -175,6 +298,7 @@ async def test_duplicate_video_notifications_are_deduplicated(
         youtube_video_id="vid_tr_001",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     await db_session.commit()
@@ -187,6 +311,7 @@ async def test_duplicate_video_notifications_are_deduplicated(
         youtube_video_id="vid_tr_001",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     await db_session.commit()
@@ -206,6 +331,7 @@ async def test_notification_for_unauthorized_channel_is_rejected(
             youtube_video_id="vid_other",
             youtube_channel_id="UC_STRANGER",
             authorized_channel_id="UC_TURKISH_CHANNEL",
+            organization_id=LEGACY_ORGANIZATION_ID,
         )
 
 
@@ -216,6 +342,7 @@ async def test_private_and_scheduled_videos_and_caption_diagnostics_persistence(
     scheduled_time = datetime(2026, 11, 1, 18, 0, tzinfo=UTC)
 
     video = Video(
+        organization_id=LEGACY_ORGANIZATION_ID,
         youtube_video_id="vid_sched_01",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         source_language="tr",
@@ -272,6 +399,7 @@ async def test_job_and_language_asset_explicit_states_and_safe_retries(
         youtube_video_id="vid_retry_01",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         authorized_channel_id="UC_TURKISH_CHANNEL",
+        organization_id=LEGACY_ORGANIZATION_ID,
         now=now,
     )
     job = res.job
@@ -294,6 +422,7 @@ async def test_job_and_language_asset_explicit_states_and_safe_retries(
 
     # Create a video and language asset to verify asset retry safety
     video = Video(
+        organization_id=LEGACY_ORGANIZATION_ID,
         youtube_video_id="vid_retry_01",
         youtube_channel_id="UC_TURKISH_CHANNEL",
         source_language="tr",

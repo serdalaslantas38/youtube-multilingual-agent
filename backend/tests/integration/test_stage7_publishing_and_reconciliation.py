@@ -31,6 +31,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.main import create_app
 from app.models.entities import SourceCaptionTrack, Video
 from app.models.enums import (
@@ -46,6 +47,7 @@ from app.services.youtube import (
     YouTubeVideoResource,
     parse_youtube_api_error,
 )
+from tests.conftest import authorize_test_app
 from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_DESCRIPTION,
     GOLDEN_TURKISH_SRT,
@@ -157,6 +159,7 @@ async def _seed_video_and_source_caption(app, remote_video: YouTubeVideoResource
     now = datetime.now(UTC)
     async with app.state.session_factory() as session:
         video = Video(
+            organization_id=LEGACY_ORGANIZATION_ID,
             youtube_video_id=remote_video.video_id,
             youtube_channel_id=remote_video.channel_id,
             source_language="tr",
@@ -199,6 +202,7 @@ async def test_metadata_and_caption_publish_verification_and_idempotency(
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(
@@ -306,6 +310,7 @@ async def test_existing_tracks_and_localizations_are_skipped_and_never_overwritt
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(
@@ -385,6 +390,7 @@ async def test_409_caption_exists_conflict_verifies_without_retrying_insert(
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(
@@ -437,6 +443,7 @@ async def test_status_is_never_published_when_post_write_verification_fails(
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     # Configure mock so videos.update returns 200 OK but does NOT persist to videos_by_id,
@@ -481,6 +488,7 @@ async def test_uncertain_outcome_blocks_retry_and_reconciles_both_landed_and_abs
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(
@@ -584,6 +592,7 @@ async def test_concurrent_studio_source_drift_aborts_before_write(
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(
@@ -629,6 +638,7 @@ async def test_force_publish_video_skips_reconciliation_and_publishes_all_after_
 ) -> None:
     settings = _make_settings(tmp_path, config_dir, publishing_enabled=True)
     app = create_app(settings)
+    authorize_test_app(app)
     remote_video = _build_remote_video()
     mock_captions = _build_mock_captions()
     mock_yt = MockYouTubeReadOnlyDataClient(

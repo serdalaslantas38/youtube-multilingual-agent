@@ -63,8 +63,8 @@ count parity, empty cues, max line length, encoding, title ≤100 chars, descrip
 ## Stage 6 — Dashboard & approval policies
 **Deliverables:** policy engine (pure function + exhaustive tests); approval API
 with hash binding and audit log; React/Vite dashboard (see frontend/README.md);
-dashboard sign-in (Google Sign-In allowlist or IAP); per-language settings stored
-in DB with audit.
+dashboard sign-in (verified Google OIDC, server-side sessions, and organization
+roles); per-language settings stored in DB with audit.
 **Acceptance criteria**
 - Editing an approved asset invalidates approval (tested).
 - Every row of the policy truth table tested (mode × global switch × validation × review × approval × uncertain state × kill switch).

@@ -230,9 +230,19 @@ export interface PolicySettingsResponse {
 
 export interface DashboardOperatorResponse {
   authenticated: boolean;
+  user_id: string;
   email: string;
-  auth_source: string;
-  allowlist_enforced: boolean;
+  organization_id: string | null;
+  organization_name: string | null;
+  role: string | null;
+  csrf_token: string | null;
+  organizations: OrganizationMembershipItem[];
+}
+
+export interface OrganizationMembershipItem {
+  id: string;
+  name: string;
+  role: string;
 }
 
 export interface AuditEventItem {

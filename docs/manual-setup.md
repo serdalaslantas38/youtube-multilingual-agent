@@ -53,8 +53,10 @@ These steps require your Google account and cannot be automated by the agent.
 ## D. OAuth client (already created — type "Web application")
 
 Authorized redirect URIs:
-- Local: `http://localhost:8000/auth/callback`
-- Production (Stage 9): `https://<cloud-run-url>/auth/callback`
+- Local YouTube authorization: `http://localhost:8000/auth/callback`
+- Local dashboard OIDC sign-in: `http://localhost:8000/auth/oidc/callback`
+- Production YouTube authorization: `https://<cloud-run-url>/auth/callback`
+- Production dashboard OIDC sign-in: `https://<cloud-run-url>/auth/oidc/callback`
 
 Authorized JavaScript origins (dashboard, Stage 6): `http://localhost:5173`.
 
@@ -70,11 +72,11 @@ Send me only the **video ID** — never credentials.
 
 | Value | Where it goes | Stage |
 |---|---|---|
-| Channel ID (`UC…`) — not secret | `.env` `YOUTUBE_CHANNEL_ID` | 4 |
+| Legacy workspace channel pin (`UC…`) — optional | `.env` `YOUTUBE_CHANNEL_ID` | 4 |
 | OAuth client JSON path | `.env` `GOOGLE_OAUTH_CLIENT_SECRETS_FILE` | 4 |
 | `ENCRYPTION_KEY` (generate locally) | `.env` | 4 |
 | Gemini API key (local) | `.env` `GEMINI_API_KEY` | 5 |
-| Dashboard emails | `.env` `DASHBOARD_ALLOWED_EMAILS` | 6 |
+| Initial legacy workspace bootstrap emails | `.env` `DASHBOARD_ALLOWED_EMAILS` | 6 |
 | GCP project id, region | `.env` / Terraform vars | 9 |
 | `WEBSUB_SECRET` (generate) | Secret Manager | 8/9 |
 

@@ -2,10 +2,10 @@
 
 ## Current status
 
-This repository is a mature single-channel localization and publishing application,
-not yet a multi-customer SaaS. Preserve the YouTube and localization workflows;
-SaaS work should wrap them with tenant-aware identity, ownership, operations, and
-billing rather than rewrite them.
+This repository is a mature localization and publishing application being
+prepared for multi-customer SaaS. Phase 1 added organization ownership and a
+legacy-workspace backfill. Phase 2 adds verified identity, role checks, and
+request-scoped tenant access while preserving the existing YouTube workflows.
 
 ### Existing capabilities confirmed in the source
 
@@ -20,26 +20,22 @@ billing rather than rewrite them.
   read-back verification, and uncertain-outcome reconciliation.
 - A database-backed idempotent job enqueue/retry helper.
 
-### Commercial SaaS blockers
+### Remaining SaaS blockers
 
-1. **No tenant boundary:** channel connections and videos are globally unique and
-   domain records do not carry an organization owner. API reads and writes are not
-   consistently constrained by a tenant context.
-2. **No customer identity system:** the dashboard accepts IAP/operator headers and
-   includes an email-only cookie login. An email string supplied by a browser is not
-   proof of identity and must not be used as SaaS authentication.
-3. **No organization lifecycle:** there are no users, organizations, memberships,
-   invitations, role permissions, or workspace switching.
-4. **No production worker runtime:** durable job persistence and retry helpers exist,
+1. **Organization lifecycle is incomplete:** users, organizations, memberships,
+   role permissions, and workspace switching now exist. Invitations, self-service
+   workspace provisioning, and account recovery are not implemented.
+2. **Worker runtime is incomplete:** durable job persistence and retry helpers exist,
    but the repository does not yet provide a complete continuously running worker
    service and operational scheduler.
-5. **No billing or usage enforcement:** subscriptions, plan entitlements, usage
+3. **No billing or usage enforcement:** subscriptions, plan entitlements, usage
    metering, payment webhooks, and quota enforcement are not implemented.
-6. **No SaaS customer onboarding:** the dashboard is an operator workflow rather
+4. **No SaaS customer onboarding:** the dashboard is an operator workflow rather
    than a self-service signup and workspace product.
-7. **Production hardening remains:** deploy-time secret/KMS integration, CSRF/session
-   hardening, tenant-aware audit logs, monitoring, backups, and incident runbooks
-   need to be completed and exercised.
+5. **Production hardening remains:** deploy-time secret/KMS integration, session
+   lifecycle operations, monitoring, backups, and incident runbooks need to be
+   completed and exercised. API sessions now use CSRF tokens and tenant-aware audit
+   events are scoped to the active organization.
 
 ## Required architecture
 
@@ -77,6 +73,9 @@ billing rather than rewrite them.
   prevents the same YouTube channel from being connected to multiple customer
   workspaces; otherwise change uniqueness to `(organization_id, youtube_channel_id)`
   and define how a channel can be shared or transferred.
+- Current Phase 2 keeps channel and video identifiers globally unique, so one
+  YouTube channel belongs to one organization. A duplicate channel connection is
+  rejected; sharing or transferring a channel needs a separate ownership design.
 - Add migration upgrade/downgrade tests on SQLite and PostgreSQL.
 - Do not deploy until tenant ownership is complete and verified.
 
@@ -89,6 +88,16 @@ billing rather than rewrite them.
   reconcile, or inspect another organization's records by guessing IDs.
 - Remove the email-only login path from production; retain a clearly isolated local
   development identity only under `APP_ENV=development`.
+
+Phase 2 implementation adds Google OIDC state/nonce/PKCE validation, revocable
+server-side sessions with CSRF checks, membership-verified organization selection,
+owner/admin/editor/viewer route dependencies, and request-local organization scope.
+The email-only login and operator/IAP header paths have been removed. The initial
+legacy workspace can still bootstrap allowlisted users; newly provisioned
+organizations can connect a channel without the legacy `YOUTUBE_CHANNEL_ID` pin.
+Channel/video IDs remain globally unique, so channels cannot be shared across
+organizations in this design. Workspace invitation and self-service creation remain
+customer onboarding work for Phase 5.
 
 ### Phase 3 — worker and operational isolation
 

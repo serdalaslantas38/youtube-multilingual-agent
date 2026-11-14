@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.approvals_and_settings import router as approvals_and_settings_router
 from app.api.health import router as health_router
+from app.api.identity import router as identity_router
 from app.api.localization import router as localization_router
 from app.api.oauth_and_discovery import router as oauth_and_discovery_router
 from app.api.publishing import router as publishing_router
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     application.include_router(health_router)
+    application.include_router(identity_router)
     application.include_router(oauth_and_discovery_router)
     application.include_router(localization_router)
     application.include_router(approvals_and_settings_router)

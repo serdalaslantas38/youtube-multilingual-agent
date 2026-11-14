@@ -180,21 +180,6 @@ class UpdateGlobalPolicyRequest(_StrictRequest):
     reason: str = Field(min_length=3, max_length=500)
 
 
-class DashboardOperatorResponse(BaseModel):
-    """Current authenticated operator identity for the dashboard."""
-
-    authenticated: bool
-    email: str
-    auth_source: str
-    allowlist_enforced: bool
-
-
-class DashboardLoginRequest(_StrictRequest):
-    """Sign-in request for local/session-based dashboard access."""
-
-    email: str = Field(min_length=3, max_length=320)
-
-
 class AuditEventItem(BaseModel):
     """Immutable audit log entry."""
 

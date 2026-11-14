@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenancy import current_organization_id
 from app.models.entities import QuotaLedger
 from app.models.enums import VideoPrivacyStatus
 from app.services.youtube.captions_client import (
@@ -790,6 +791,7 @@ async def record_quota_usage(
     current = now or datetime.now(_PACIFIC_TZ)
     pt_date = current.astimezone(_PACIFIC_TZ).date()
     entry = QuotaLedger(
+        organization_id=current_organization_id(),
         quota_date_pt=pt_date,
         api_method=api_method,
         units=units,
@@ -806,7 +808,8 @@ async def get_today_quota_used(session: AsyncSession, *, now: datetime | None = 
     current = now or datetime.now(_PACIFIC_TZ)
     pt_date = current.astimezone(_PACIFIC_TZ).date()
     stmt = select(func.coalesce(func.sum(QuotaLedger.units), 0)).where(
-        QuotaLedger.quota_date_pt == pt_date
+        QuotaLedger.organization_id == current_organization_id(),
+        QuotaLedger.quota_date_pt == pt_date,
     )
     total = (await session.execute(stmt)).scalar_one()
     return int(total)

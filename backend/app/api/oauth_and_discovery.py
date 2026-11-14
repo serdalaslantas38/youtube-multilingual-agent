@@ -7,17 +7,20 @@ OAuth tokens and secrets are encrypted at rest and never returned in responses.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.api.dependencies import AdminAccess, CurrentIdentity, EditorAccess, ViewerAccess
 from app.core.app_config import AppConfig
 from app.core.crypto import TokenEncryptionError
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID, current_organization_id
 from app.models.entities import SourceCaptionTrack, Video
 from app.schemas.youtube import (
     ChannelStatusResponse,
@@ -35,6 +38,7 @@ from app.services.youtube.captions_client import YouTubeApiError
 from app.services.youtube.discovery import (
     ChannelBindingMismatchError,
     ChannelNotConnectedError,
+    ChannelOwnershipConflictError,
     discover_channel_videos,
     get_active_channel_connection,
     import_video_by_url_or_id,
@@ -65,6 +69,13 @@ router = APIRouter(tags=["oauth-and-discovery"])
 def _get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
     factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
     return factory
+
+
+def _configured_channel_id(settings: Settings) -> str:
+    """Apply the deployment channel pin only to the migrated legacy workspace."""
+    if current_organization_id() == LEGACY_ORGANIZATION_ID:
+        return settings.youtube_channel_id.strip()
+    return ""
 
 
 def _get_oauth_state_store(request: Request) -> OAuthStateStore:
@@ -125,6 +136,7 @@ def _to_track_summary(track: SourceCaptionTrack) -> SourceCaptionTrackSummary:
 @router.get("/auth/google/start", response_model=OAuthStartResponse)
 async def oauth_google_start(
     request: Request,
+    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
     redirect: bool = Query(
         default=False,
         description="If true, issue an HTTP 302 redirect directly to Google's consent screen.",
@@ -144,6 +156,8 @@ async def oauth_google_start(
     pending, code_challenge = state_store.create_session(
         redirect_uri=client_cfg.redirect_uri,
         scopes=DEFAULT_YOUTUBE_SCOPES,
+        user_id=identity.user_id,
+        organization_id=identity.organization_id,
     )
     auth_url = build_authorization_url(
         client_cfg,
@@ -165,6 +179,7 @@ async def oauth_google_start(
 @router.get("/auth/callback", response_model=ChannelStatusResponse)
 async def oauth_google_callback(
     request: Request,
+    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
@@ -190,6 +205,11 @@ async def oauth_google_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    if pending.user_id != identity.user_id or pending.organization_id != identity.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="YouTube authorization must complete in the same user and workspace session.",
+        )
 
     try:
         client_cfg = resolve_oauth_client_config(settings)
@@ -216,7 +236,7 @@ async def oauth_google_callback(
 
     yt_client = _build_yt_client(request, bundle.access_token)
     try:
-        identity = await yt_client.get_authenticated_channel()
+        channel_identity = await yt_client.get_authenticated_channel()
     except YouTubeApiError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -229,7 +249,7 @@ async def oauth_google_callback(
             conn = await upsert_authorized_channel_connection(
                 session,
                 settings=settings,
-                identity=identity,
+                identity=channel_identity,
                 refresh_token=bundle.refresh_token,
                 scopes=bundle.scopes,
             )
@@ -241,16 +261,28 @@ async def oauth_google_callback(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=str(exc),
             ) from exc
+        except ChannelOwnershipConflictError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
         except TokenEncryptionError as exc:
             await session.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=str(exc),
             ) from exc
+        except IntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The YouTube channel could not be assigned to this organization.",
+            ) from exc
 
         return ChannelStatusResponse(
             connected=True,
-            configured_channel_id=settings.youtube_channel_id or None,
+            configured_channel_id=_configured_channel_id(settings) or None,
             youtube_channel_id=conn.youtube_channel_id,
             channel_title=conn.channel_title,
             custom_url=conn.custom_url,
@@ -265,24 +297,26 @@ async def oauth_google_callback(
 
 
 @router.get("/api/channel/status", response_model=ChannelStatusResponse)
-async def get_channel_status(request: Request) -> ChannelStatusResponse:
+async def get_channel_status(
+    request: Request,
+    _identity: Annotated[CurrentIdentity, Depends(ViewerAccess)],
+) -> ChannelStatusResponse:
     """Return the connected YouTube channel identity and daily quota usage (no tokens exposed)."""
     settings: Settings = request.app.state.settings
     session_factory = _get_session_factory(request)
     async with session_factory() as session:
-        conn = await get_active_channel_connection(
-            session, expected_channel_id=settings.youtube_channel_id
-        )
+        expected_channel_id = _configured_channel_id(settings)
+        conn = await get_active_channel_connection(session, expected_channel_id=expected_channel_id)
         quota_today = await get_today_quota_used(session)
         if conn is None:
             return ChannelStatusResponse(
                 connected=False,
-                configured_channel_id=settings.youtube_channel_id or None,
+                configured_channel_id=expected_channel_id or None,
                 today_quota_units_used=quota_today,
             )
         return ChannelStatusResponse(
             connected=True,
-            configured_channel_id=settings.youtube_channel_id or None,
+            configured_channel_id=expected_channel_id or None,
             youtube_channel_id=conn.youtube_channel_id,
             channel_title=conn.channel_title,
             custom_url=conn.custom_url,
@@ -308,6 +342,7 @@ class ImportVideoRequest(BaseModel):
 @router.post("/api/videos/discover", response_model=VideoDiscoveryResponse)
 async def discover_videos_endpoint(
     request: Request,
+    _identity: Annotated[CurrentIdentity, Depends(EditorAccess)],
     max_results: int = Query(default=50, ge=1, le=500),
 ) -> VideoDiscoveryResponse:
     """Discover recent videos from the connected channel's uploads playlist (read-only)."""
@@ -361,6 +396,7 @@ async def discover_videos_endpoint(
 async def import_video_endpoint(
     body: ImportVideoRequest,
     request: Request,
+    _identity: Annotated[CurrentIdentity, Depends(EditorAccess)],
 ) -> DiscoveredVideoSummary:
     """Import any older video from the connected channel by its YouTube URL or 11-char ID."""
     settings: Settings = request.app.state.settings
@@ -408,11 +444,18 @@ async def import_video_endpoint(
 
 
 @router.get("/api/videos", response_model=list[DiscoveredVideoSummary])
-async def list_stored_videos(request: Request) -> list[DiscoveredVideoSummary]:
+async def list_stored_videos(
+    request: Request,
+    _identity: Annotated[CurrentIdentity, Depends(ViewerAccess)],
+) -> list[DiscoveredVideoSummary]:
     """List videos already discovered and stored in the database."""
     session_factory = _get_session_factory(request)
     async with session_factory() as session:
-        stmt = select(Video).order_by(Video.discovered_at.desc())
+        stmt = (
+            select(Video)
+            .where(Video.organization_id == current_organization_id())
+            .order_by(Video.discovered_at.desc())
+        )
         rows = (await session.execute(stmt)).scalars().all()
         return [_to_video_summary(v) for v in rows]
 
@@ -424,6 +467,7 @@ async def list_stored_videos(request: Request) -> list[DiscoveredVideoSummary]:
 async def inspect_video_captions_endpoint(
     youtube_video_id: str,
     request: Request,
+    _identity: Annotated[CurrentIdentity, Depends(EditorAccess)],
     probe_translations: bool = Query(
         default=False,
         description=(
