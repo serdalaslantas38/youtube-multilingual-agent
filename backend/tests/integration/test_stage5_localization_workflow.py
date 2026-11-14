@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.main import create_app
 from app.models.entities import SourceCaptionTrack, Video
 from app.models.enums import (
@@ -85,6 +86,7 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
         now = datetime.now(UTC)
         async with app.state.session_factory() as session:
             video = Video(
+                organization_id=LEGACY_ORGANIZATION_ID,
                 youtube_video_id="LYLLaIfYjWs",
                 youtube_channel_id="UCkL0_jtFQqNCGG2gTTXcZ7w",
                 source_language="tr",
@@ -219,6 +221,7 @@ async def test_localize_video_transitions_to_needs_attention_on_source_ambiguity
         now = datetime.now(UTC)
         async with app.state.session_factory() as session:
             video = Video(
+                organization_id=LEGACY_ORGANIZATION_ID,
                 youtube_video_id="NdOxYWETSdA",
                 youtube_channel_id="UCkL0_jtFQqNCGG2gTTXcZ7w",
                 source_language="tr",

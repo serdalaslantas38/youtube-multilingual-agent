@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.app_config import AppConfig
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.models.entities import AuditEvent
 from app.schemas.approvals import (
     ApproveAssetRequest,
@@ -387,7 +388,12 @@ async def list_audit_events_endpoint(
     """Return recent immutable audit log events ordered newest first."""
     session_factory = _get_session_factory(request)
     async with session_factory() as session:
-        stmt = select(AuditEvent).order_by(AuditEvent.id.desc()).limit(limit)
+        stmt = (
+            select(AuditEvent)
+            .where(AuditEvent.organization_id == LEGACY_ORGANIZATION_ID)
+            .order_by(AuditEvent.id.desc())
+            .limit(limit)
+        )
         events = list((await session.execute(stmt)).scalars().all())
         return [
             AuditEventItem(

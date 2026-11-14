@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_config import LanguagesConfig
 from app.core.crypto import decrypt_secret, encrypt_secret
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.core.settings import Settings
 from app.models.entities import ChannelConnection, SourceCaptionTrack, Video
 from app.models.enums import ChannelConnectionStatus, VideoWorkflowState
@@ -82,7 +83,8 @@ async def upsert_authorized_channel_connection(
     current = now or datetime.now(UTC)
 
     stmt = select(ChannelConnection).where(
-        ChannelConnection.youtube_channel_id == identity.channel_id
+        ChannelConnection.organization_id == LEGACY_ORGANIZATION_ID,
+        ChannelConnection.youtube_channel_id == identity.channel_id,
     )
     conn = (await session.execute(stmt)).scalar_one_or_none()
     warning = (
@@ -91,6 +93,7 @@ async def upsert_authorized_channel_connection(
     )
     if conn is None:
         conn = ChannelConnection(
+            organization_id=LEGACY_ORGANIZATION_ID,
             youtube_channel_id=identity.channel_id,
             channel_title=identity.title,
             custom_url=identity.custom_url,
@@ -134,7 +137,11 @@ async def get_active_channel_connection(
     expected_channel_id: str = "",
 ) -> ChannelConnection | None:
     """Return the stored `ChannelConnection` (filtered by `expected_channel_id` if given)."""
-    stmt = select(ChannelConnection).order_by(ChannelConnection.updated_at.desc())
+    stmt = (
+        select(ChannelConnection)
+        .where(ChannelConnection.organization_id == LEGACY_ORGANIZATION_ID)
+        .order_by(ChannelConnection.updated_at.desc())
+    )
     if expected_channel_id.strip():
         stmt = stmt.where(ChannelConnection.youtube_channel_id == expected_channel_id.strip())
     return (await session.execute(stmt)).scalars().first()
@@ -181,12 +188,16 @@ async def upsert_video_from_youtube_resource(
 ) -> Video:
     """Idempotently create or update a `Video` row from a `YouTubeVideoResource`."""
     current = now or datetime.now(UTC)
-    stmt = select(Video).where(Video.youtube_video_id == resource.video_id)
+    stmt = select(Video).where(
+        Video.organization_id == LEGACY_ORGANIZATION_ID,
+        Video.youtube_video_id == resource.video_id,
+    )
     video = (await session.execute(stmt)).scalar_one_or_none()
     content_hash = resource.compute_source_content_hash()
 
     if video is None:
         video = Video(
+            organization_id=LEGACY_ORGANIZATION_ID,
             youtube_video_id=resource.video_id,
             youtube_channel_id=resource.channel_id,
             source_language=source_language,
@@ -344,7 +355,10 @@ async def inspect_and_persist_video_captions(
 ) -> tuple[Video, list[SourceCaptionTrack]]:
     """Fetch video metadata (if needed) and inspect its caption tracks via `captions.list`."""
     current = now or datetime.now(UTC)
-    stmt = select(Video).where(Video.youtube_video_id == youtube_video_id)
+    stmt = select(Video).where(
+        Video.organization_id == LEGACY_ORGANIZATION_ID,
+        Video.youtube_video_id == youtube_video_id,
+    )
     video = (await session.execute(stmt)).scalar_one_or_none()
     if video is None:
         resources = await yt_client.get_videos([youtube_video_id])

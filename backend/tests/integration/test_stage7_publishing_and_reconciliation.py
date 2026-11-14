@@ -31,6 +31,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.main import create_app
 from app.models.entities import SourceCaptionTrack, Video
 from app.models.enums import (
@@ -157,6 +158,7 @@ async def _seed_video_and_source_caption(app, remote_video: YouTubeVideoResource
     now = datetime.now(UTC)
     async with app.state.session_factory() as session:
         video = Video(
+            organization_id=LEGACY_ORGANIZATION_ID,
             youtube_video_id=remote_video.video_id,
             youtube_channel_id=remote_video.channel_id,
             source_language="tr",

@@ -112,6 +112,50 @@ async def ensure_sqlite_schema_initialized(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # SQLite is the development/test bootstrap path and does not run Alembic on
+    # startup. Seed the same non-authenticating legacy workspace used by migration
+    # 0002 so transitional single-workspace routes have a valid FK target.
+    from datetime import UTC, datetime
+
+    from app.core.tenancy import LEGACY_ORGANIZATION_ID, LEGACY_ORGANIZATION_SLUG
+    from app.models.entities import Organization, OrganizationMember, User
+
+    now = datetime.now(UTC)
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        organization = await session.get(Organization, LEGACY_ORGANIZATION_ID)
+        if organization is None:
+            organization = Organization(
+                id=LEGACY_ORGANIZATION_ID,
+                name="Legacy Workspace",
+                slug=LEGACY_ORGANIZATION_SLUG,
+                is_legacy=True,
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+            user = User(
+                id="00000000-0000-4000-8000-000000000002",
+                email_verified=False,
+                is_active=False,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add_all(
+                [
+                    organization,
+                    user,
+                    OrganizationMember(
+                        organization_id=LEGACY_ORGANIZATION_ID,
+                        user_id=user.id,
+                        role="owner",
+                        is_active=False,
+                        created_at=now,
+                        updated_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
 
 async def get_db_session(
     session_factory: async_sessionmaker[AsyncSession],

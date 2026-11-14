@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.main import create_app
 from app.models.entities import SourceCaptionTrack, Video
 from app.models.enums import (
@@ -79,6 +80,7 @@ async def test_approval_hash_binding_and_edit_invalidation_workflow(
         now = datetime.now(UTC)
         async with app.state.session_factory() as session:
             video = Video(
+                organization_id=LEGACY_ORGANIZATION_ID,
                 youtube_video_id="LYLLaIfYjWs",
                 youtube_channel_id="UCkL0_jtFQqNCGG2gTTXcZ7w",
                 source_language="tr",

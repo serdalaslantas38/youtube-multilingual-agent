@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.app_config import AppConfig
 from app.core.crypto import TokenEncryptionError
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.core.settings import Settings
 from app.models.entities import SourceCaptionTrack, Video
 from app.schemas.youtube import (
@@ -412,7 +413,11 @@ async def list_stored_videos(request: Request) -> list[DiscoveredVideoSummary]:
     """List videos already discovered and stored in the database."""
     session_factory = _get_session_factory(request)
     async with session_factory() as session:
-        stmt = select(Video).order_by(Video.discovered_at.desc())
+        stmt = (
+            select(Video)
+            .where(Video.organization_id == LEGACY_ORGANIZATION_ID)
+            .order_by(Video.discovered_at.desc())
+        )
         rows = (await session.execute(stmt)).scalars().all()
         return [_to_video_summary(v) for v in rows]
 

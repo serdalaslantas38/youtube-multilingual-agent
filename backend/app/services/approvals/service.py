@@ -19,6 +19,7 @@ from app.core.app_config import (
     TargetLanguage,
 )
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.models.entities import (
     Approval,
     AuditEvent,
@@ -67,6 +68,7 @@ async def record_audit_event(
 ) -> AuditEvent:
     """Append an immutable entry to the `audit_events` table."""
     event = AuditEvent(
+        organization_id=LEGACY_ORGANIZATION_ID,
         actor=actor,
         action=action,
         target_type=target_type,
@@ -86,7 +88,10 @@ async def resolve_effective_app_config(
     """Overlay database policy and language overrides from `audit_events` onto `seed_config`."""
     stmt = (
         select(AuditEvent)
-        .where(AuditEvent.target_type.in_(("language_policy", "global_policy")))
+        .where(
+            AuditEvent.organization_id == LEGACY_ORGANIZATION_ID,
+            AuditEvent.target_type.in_(("language_policy", "global_policy")),
+        )
         .order_by(AuditEvent.id.asc())
     )
     events = list((await session.execute(stmt)).scalars().all())
@@ -295,7 +300,10 @@ async def _load_asset_with_relations(
             selectinload(LanguageAsset.approvals),
             selectinload(LanguageAsset.publish_attempts),
         )
-        .where(LanguageAsset.id == asset_id)
+        .where(
+            LanguageAsset.id == asset_id,
+            LanguageAsset.video.has(Video.organization_id == LEGACY_ORGANIZATION_ID),
+        )
     )
     asset = (await session.execute(stmt)).scalar_one_or_none()
     if asset is None:

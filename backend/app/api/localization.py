@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.app_config import AppConfig, aload_app_config
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.models.entities import LanguageAsset, Video
 from app.orchestration.localization import _asset_to_summary, localize_video_assets
 from app.schemas.localization import (
@@ -73,7 +74,10 @@ async def get_video_localized_assets(
         stmt = (
             select(Video)
             .options(selectinload(Video.source_captions), selectinload(Video.language_assets))
-            .where(Video.youtube_video_id == youtube_video_id)
+            .where(
+                Video.organization_id == LEGACY_ORGANIZATION_ID,
+                Video.youtube_video_id == youtube_video_id,
+            )
         )
         video = (await session.execute(stmt)).scalar_one_or_none()
         if video is None:
@@ -155,7 +159,10 @@ async def localize_video_endpoint(
                 vid_stmt = (
                     select(Video)
                     .options(selectinload(Video.source_captions))
-                    .where(Video.youtube_video_id == youtube_video_id)
+                    .where(
+                        Video.organization_id == LEGACY_ORGANIZATION_ID,
+                        Video.youtube_video_id == youtube_video_id,
+                    )
                 )
                 vid_row = (await session.execute(vid_stmt)).scalar_one_or_none()
                 if vid_row is not None and not vid_row.source_captions:

@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -65,6 +67,10 @@ class ChannelConnection(Base):
     __tablename__ = "channel_connections"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True
+    )
     youtube_channel_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     channel_title: Mapped[str] = mapped_column(String(255), nullable=False)
     custom_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -83,6 +89,7 @@ class ChannelConnection(Base):
         DateTime(timezone=True), nullable=True
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="channel_connections")
 
 
 class Video(Base):
@@ -96,6 +103,10 @@ class Video(Base):
     __tablename__ = "videos"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True
+    )
     youtube_video_id: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     youtube_channel_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
@@ -136,6 +147,7 @@ class Video(Base):
     language_assets: Mapped[list[LanguageAsset]] = relationship(
         back_populates="video", cascade="all, delete-orphan"
     )
+    organization: Mapped[Organization] = relationship(back_populates="videos")
 
 
 class SourceCaptionTrack(Base):
@@ -296,10 +308,17 @@ class Job(Base):
     """Durable, resumable, deduplicated background job record."""
 
     __tablename__ = "jobs"
-    __table_args__ = (Index("ix_jobs_state_next_run_at", "state", "next_run_at"),)
+    __table_args__ = (
+        Index("ix_jobs_state_next_run_at", "state", "next_run_at"),
+        UniqueConstraint("organization_id", "dedupe_key", name="uq_jobs_org_dedupe_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    dedupe_key: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(160), nullable=False)
     job_type: Mapped[JobType] = mapped_column(_enum_col(JobType), nullable=False, index=True)
     state: Mapped[JobState] = mapped_column(
         _enum_col(JobState), nullable=False, default=JobState.QUEUED
@@ -315,6 +334,7 @@ class Job(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="jobs")
 
 
 class QuotaLedger(Base):
@@ -323,11 +343,16 @@ class QuotaLedger(Base):
     __tablename__ = "quota_ledger"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True
+    )
     quota_date_pt: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     api_method: Mapped[str] = mapped_column(String(64), nullable=False)
     units: Mapped[int] = mapped_column(Integer, nullable=False)
     video_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="quota_entries")
 
 
 class AuditEvent(Base):
@@ -336,9 +361,82 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False,
+        index=True
+    )
     actor: Mapped[str] = mapped_column(String(320), nullable=False)
     action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     target_type: Mapped[str] = mapped_column(String(64), nullable=False)
     target_id: Mapped[str] = mapped_column(String(128), nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="audit_events")
+
+
+class User(Base):
+    """Application identity keyed by OIDC issuer and subject, never by email alone."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    oidc_issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    oidc_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    memberships: Mapped[list[OrganizationMember]] = relationship(back_populates="user")
+
+
+class Organization(Base):
+    """Customer workspace that owns channels and workflow data."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    is_legacy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    memberships: Mapped[list[OrganizationMember]] = relationship(back_populates="organization")
+    channel_connections: Mapped[list[ChannelConnection]] = relationship(
+        back_populates="organization"
+    )
+    videos: Mapped[list[Video]] = relationship(back_populates="organization")
+    jobs: Mapped[list[Job]] = relationship(back_populates="organization")
+    quota_entries: Mapped[list[QuotaLedger]] = relationship(back_populates="organization")
+    audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="organization")
+
+
+class OrganizationMember(Base):
+    """Role assignment joining an application user to an organization."""
+
+    __tablename__ = "organization_members"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_organization_members_org_user"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'editor', 'viewer')",
+            name="ck_organization_members_role_valid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    organization_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="memberships")
+    user: Mapped[User] = relationship(back_populates="memberships")
