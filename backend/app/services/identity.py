@@ -80,9 +80,7 @@ async def exchange_oidc_code(
     async with httpx.AsyncClient(timeout=20.0) as http:
         response = await http.post(client.token_uri, data=form)
     if response.status_code != 200:
-        raise OAuthTokenExchangeError(
-            f"OIDC token endpoint returned HTTP {response.status_code}."
-        )
+        raise OAuthTokenExchangeError(f"OIDC token endpoint returned HTTP {response.status_code}.")
     payload = response.json()
     token = payload.get("id_token") if isinstance(payload, dict) else None
     if not isinstance(token, str) or not token:

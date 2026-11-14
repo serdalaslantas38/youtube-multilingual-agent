@@ -7,6 +7,7 @@ can accidentally fall through to the real YouTube API.
 
 from __future__ import annotations
 
+import hashlib
 import socket
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -34,7 +35,7 @@ def authorize_test_app(app: Any, *, role: str = "owner") -> None:
                 user_id="test-user",
                 email="test-owner@example.test",
                 session_id=1,
-                csrf_token="test-csrf-token",
+                csrf_token=hashlib.sha256(b"phase2-test-csrf").hexdigest(),
                 organization_id=LEGACY_ORGANIZATION_ID,
                 organization_name="Legacy Workspace",
                 role=role,
@@ -43,6 +44,7 @@ def authorize_test_app(app: Any, *, role: str = "owner") -> None:
             reset_organization_id(token)
 
     app.dependency_overrides[require_current_principal] = test_principal
+
 
 _SENSITIVE_ENV = (
     "GOOGLE_CLIENT_ID",

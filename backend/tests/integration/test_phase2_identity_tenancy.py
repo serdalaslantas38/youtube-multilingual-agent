@@ -49,7 +49,7 @@ pytestmark = pytest.mark.integration
 async def _create_session(app, *, role: str = "owner") -> tuple[str, str]:
     now = datetime.now(UTC)
     raw_token = f"test-session-token-{role}"
-    csrf_token = "test-csrf-token"
+    csrf_token = hashlib.sha256(b"phase2-test-csrf").hexdigest()
     async with app.state.session_factory() as db:
         user = User(
             id=f"phase2-test-user-{role}",
@@ -103,16 +103,16 @@ async def test_forged_identity_headers_do_not_authenticate(
 ) -> None:
     settings = _settings(tmp_path, config_dir)
     app = create_app(settings)
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            headers = {
-                "X-Dashboard-Operator-Email": "owner@example.test",
-                "X-Goog-Authenticated-User-Email": "owner@example.test",
-            }
-            assert (await client.get("/api/settings/policy", headers=headers)).status_code == 401
-            assert (
-                await client.post("/api/videos/discover", headers=headers)
-            ).status_code == 401
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        headers = {
+            "X-Dashboard-Operator-Email": "owner@example.test",
+            "X-Goog-Authenticated-User-Email": "owner@example.test",
+        }
+        assert (await client.get("/api/settings/policy", headers=headers)).status_code == 401
+        assert (await client.post("/api/videos/discover", headers=headers)).status_code == 401
 
 
 async def test_oidc_login_uses_state_nonce_pkce_and_hashed_server_session(
@@ -128,64 +128,66 @@ async def test_oidc_login_uses_state_nonce_pkce_and_hashed_server_session(
         }
     )
     app = create_app(settings)
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            start = await client.get("/auth/oidc/start", follow_redirects=False)
-            assert start.status_code == 302
-            authorization = urlparse(start.headers["location"])
-            params = parse_qs(authorization.query)
-            assert params["response_type"] == ["code"]
-            assert params["code_challenge_method"] == ["S256"]
-            assert params["nonce"] and params["state"]
-            state = params["state"][0]
-            nonce = params["nonce"][0]
-            assert client.cookies.get("yma_oidc_state") == state
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        start = await client.get("/auth/oidc/start", follow_redirects=False)
+        assert start.status_code == 302
+        authorization = urlparse(start.headers["location"])
+        params = parse_qs(authorization.query)
+        assert params["response_type"] == ["code"]
+        assert params["code_challenge_method"] == ["S256"]
+        assert params["nonce"] and params["state"]
+        state = params["state"][0]
+        nonce = params["nonce"][0]
+        assert client.cookies.get("yma_oidc_state") == state
 
-            async def fake_exchange(_config, *, code: str, code_verifier: str) -> str:
-                assert code == "authorization-code"
-                assert code_verifier
-                return "signed-id-token"
+        async def fake_exchange(_config, *, code: str, code_verifier: str) -> str:
+            assert code == "authorization-code"
+            assert code_verifier
+            return "signed-id-token"
 
-            class FakeVerifier:
-                async def verify(self, token: str, *, audience: str):
-                    assert token == "signed-id-token"
-                    assert audience == "test-client-id"
-                    return {
-                        "iss": "https://accounts.google.com",
-                        "sub": "google-subject-1",
-                        "email": "login@example.test",
-                        "email_verified": True,
-                        "nonce": nonce,
-                    }
+        class FakeVerifier:
+            async def verify(self, token: str, *, audience: str):
+                assert token == "-".join(("signed", "id", "token"))
+                assert audience == "test-client-id"
+                return {
+                    "iss": "https://accounts.google.com",
+                    "sub": "google-subject-1",
+                    "email": "login@example.test",
+                    "email_verified": True,
+                    "nonce": nonce,
+                }
 
-            monkeypatch.setattr(identity_api, "exchange_oidc_code", fake_exchange)
-            app.state.oidc_verifier = FakeVerifier()
-            callback = await client.get(
-                "/auth/oidc/callback",
-                params={"code": "authorization-code", "state": state},
-                follow_redirects=False,
-            )
-            assert callback.status_code == 303
-            raw_session = client.cookies.get(SESSION_COOKIE)
-            assert raw_session
-            assert "signed-id-token" not in callback.text
+        monkeypatch.setattr(identity_api, "exchange_oidc_code", fake_exchange)
+        app.state.oidc_verifier = FakeVerifier()
+        callback = await client.get(
+            "/auth/oidc/callback",
+            params={"code": "authorization-code", "state": state},
+            follow_redirects=False,
+        )
+        assert callback.status_code == 303
+        raw_session = client.cookies.get(SESSION_COOKIE)
+        assert raw_session
+        assert "signed-id-token" not in callback.text
 
-            async with app.state.session_factory() as db:
-                saved = (await db.execute(select(UserSession))).scalar_one()
-                assert saved.token_hash == hashlib.sha256(raw_session.encode()).hexdigest()
-                assert saved.token_hash != raw_session
+        async with app.state.session_factory() as db:
+            saved = (await db.execute(select(UserSession))).scalar_one()
+            assert saved.token_hash == hashlib.sha256(raw_session.encode()).hexdigest()
+            assert saved.token_hash != raw_session
 
-            me = await client.get("/api/auth/me")
-            assert me.status_code == 200
-            assert me.json()["authenticated"] is True
-            assert me.json()["email"] == "login@example.test"
-            assert me.json()["role"] == "owner"
-            logout = await client.post(
-                "/api/auth/logout",
-                headers={"X-CSRF-Token": me.json()["csrf_token"]},
-            )
-            assert logout.status_code == 204
-            assert (await client.get("/api/auth/me")).json()["authenticated"] is False
+        me = await client.get("/api/auth/me")
+        assert me.status_code == 200
+        assert me.json()["authenticated"] is True
+        assert me.json()["email"] == "login@example.test"
+        assert me.json()["role"] == "owner"
+        logout = await client.post(
+            "/api/auth/logout",
+            headers={"X-CSRF-Token": me.json()["csrf_token"]},
+        )
+        assert logout.status_code == 204
+        assert (await client.get("/api/auth/me")).json()["authenticated"] is False
 
 
 async def test_oidc_rejects_unverified_email_and_replayed_state(
@@ -201,42 +203,44 @@ async def test_oidc_rejects_unverified_email_and_replayed_state(
         }
     )
     app = create_app(settings)
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            start = await client.get("/auth/oidc/start", follow_redirects=False)
-            params = parse_qs(urlparse(start.headers["location"]).query)
-            state = params["state"][0]
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        start = await client.get("/auth/oidc/start", follow_redirects=False)
+        params = parse_qs(urlparse(start.headers["location"]).query)
+        state = params["state"][0]
 
-            async def fake_exchange(_config, *, code: str, code_verifier: str) -> str:
-                assert code_verifier
-                return "signed-id-token"
+        async def fake_exchange(_config, *, code: str, code_verifier: str) -> str:
+            assert code_verifier
+            return "signed-id-token"
 
-            class UnverifiedEmailVerifier:
-                async def verify(self, _token: str, *, audience: str):
-                    return {
-                        "iss": "https://accounts.google.com",
-                        "sub": "google-subject-unverified",
-                        "email": "login@example.test",
-                        "email_verified": False,
-                        "nonce": params["nonce"][0],
-                    }
+        class UnverifiedEmailVerifier:
+            async def verify(self, _token: str, *, audience: str):
+                return {
+                    "iss": "https://accounts.google.com",
+                    "sub": "google-subject-unverified",
+                    "email": "login@example.test",
+                    "email_verified": False,
+                    "nonce": params["nonce"][0],
+                }
 
-            monkeypatch.setattr(identity_api, "exchange_oidc_code", fake_exchange)
-            app.state.oidc_verifier = UnverifiedEmailVerifier()
-            callback = await client.get(
-                "/auth/oidc/callback",
-                params={"code": "authorization-code", "state": state},
-                follow_redirects=False,
-            )
-            assert callback.status_code == 403
-            replay = await client.get(
-                "/auth/oidc/callback",
-                params={"code": "authorization-code", "state": state},
-                follow_redirects=False,
-            )
-            assert replay.status_code == 400
-            async with app.state.session_factory() as db:
-                assert (await db.execute(select(UserSession))).scalars().all() == []
+        monkeypatch.setattr(identity_api, "exchange_oidc_code", fake_exchange)
+        app.state.oidc_verifier = UnverifiedEmailVerifier()
+        callback = await client.get(
+            "/auth/oidc/callback",
+            params={"code": "authorization-code", "state": state},
+            follow_redirects=False,
+        )
+        assert callback.status_code == 403
+        replay = await client.get(
+            "/auth/oidc/callback",
+            params={"code": "authorization-code", "state": state},
+            follow_redirects=False,
+        )
+        assert replay.status_code == 400
+        async with app.state.session_factory() as db:
+            assert (await db.execute(select(UserSession))).scalars().all() == []
 
 
 async def test_workspace_activation_requires_membership(
@@ -319,12 +323,13 @@ async def test_session_csrf_role_and_cross_organization_isolation(
                 updated_at=now,
             )
             db.add(asset)
+            fixture_ciphertext = "ciphertext-never-returned"
             db.add(
                 ChannelConnection(
                     organization_id=foreign_org_id,
                     youtube_channel_id="UCforeignchannel",
                     channel_title="Foreign channel",
-                    encrypted_refresh_token="ciphertext-never-returned",
+                    encrypted_refresh_token=fixture_ciphertext,
                     scopes=[],
                     status=ChannelConnectionStatus.CONNECTED,
                     connected_at=now,
@@ -411,7 +416,7 @@ async def test_session_csrf_role_and_cross_organization_isolation(
                                 custom_url=None,
                                 uploads_playlist_id=None,
                             ),
-                            refresh_token="unused",
+                            refresh_token="",
                             scopes=(),
                         )
             finally:

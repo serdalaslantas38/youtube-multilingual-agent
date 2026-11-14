@@ -24,4 +24,3 @@ def bind_organization_id(organization_id: str) -> Token[str | None]:
 def reset_organization_id(token: Token[str | None]) -> None:
     """Restore the organization context after a request or worker operation."""
     _organization_id.reset(token)
-

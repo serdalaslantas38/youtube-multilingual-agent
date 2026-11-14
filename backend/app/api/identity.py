@@ -30,8 +30,8 @@ from app.models.entities import (
     UserSession,
 )
 from app.services.identity import (
-    GoogleOidcVerifier,
     OIDC_ISSUERS,
+    GoogleOidcVerifier,
     OidcVerifier,
     build_oidc_authorization_url,
     exchange_oidc_code,
@@ -104,9 +104,7 @@ async def oidc_login_start(request: Request) -> RedirectResponse:
     nonce = secrets.token_urlsafe(32)
     verifier, challenge = new_pkce_pair()
     async with _factory(request)() as db:
-        await db.execute(
-            delete(OidcLoginAttempt).where(OidcLoginAttempt.expires_at < now)
-        )
+        await db.execute(delete(OidcLoginAttempt).where(OidcLoginAttempt.expires_at < now))
         db.add(
             OidcLoginAttempt(
                 state_hash=_hash(state),
@@ -239,7 +237,9 @@ async def _upsert_identity_and_session(
                 raise HTTPException(status_code=503, detail="Legacy workspace is unavailable.")
             count = (
                 await db.execute(
-                    select(func.count()).select_from(OrganizationMember).where(
+                    select(func.count())
+                    .select_from(OrganizationMember)
+                    .where(
                         OrganizationMember.organization_id == legacy_org.id,
                         OrganizationMember.is_active.is_(True),
                     )

@@ -41,13 +41,13 @@ from app.models.enums import (
     VideoWorkflowState,
 )
 from app.services.translation.providers import FakeStructuredLLMClient
-from tests.conftest import authorize_test_app
 from app.services.youtube import (
     MockYouTubeCaptionClient,
     MockYouTubeReadOnlyDataClient,
     YouTubeVideoResource,
     parse_youtube_api_error,
 )
+from tests.conftest import authorize_test_app
 from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_DESCRIPTION,
     GOLDEN_TURKISH_SRT,

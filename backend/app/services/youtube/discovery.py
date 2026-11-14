@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_config import LanguagesConfig
 from app.core.crypto import decrypt_secret, encrypt_secret
-from app.core.tenancy import LEGACY_ORGANIZATION_ID, current_organization_id
 from app.core.settings import Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID, current_organization_id
 from app.models.entities import ChannelConnection, SourceCaptionTrack, Video
 from app.models.enums import ChannelConnectionStatus, VideoWorkflowState
 from app.services.validation.validators import (
@@ -177,9 +177,7 @@ async def mint_access_token_for_channel(
 ) -> tuple[ChannelConnection, str]:
     """Decrypt the stored refresh token and mint a fresh OAuth access token."""
     expected_channel = (
-        settings.youtube_channel_id
-        if current_organization_id() == LEGACY_ORGANIZATION_ID
-        else ""
+        settings.youtube_channel_id if current_organization_id() == LEGACY_ORGANIZATION_ID else ""
     )
     conn = await get_active_channel_connection(session, expected_channel_id=expected_channel)
     if conn is None:

@@ -21,12 +21,12 @@ from app.models.enums import (
 )
 from app.services.translation.providers import FakeStructuredLLMClient
 from app.services.youtube.captions_client import MockYouTubeCaptionClient
+from tests.conftest import authorize_test_app
 from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_DESCRIPTION,
     GOLDEN_TURKISH_SRT,
     GOLDEN_TURKISH_TITLE,
 )
-from tests.conftest import authorize_test_app
 
 pytestmark = pytest.mark.integration
 

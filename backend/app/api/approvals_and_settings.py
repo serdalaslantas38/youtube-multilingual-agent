@@ -9,8 +9,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.app_config import AppConfig
 from app.api.dependencies import AdminAccess, CurrentIdentity, EditorAccess, ViewerAccess
+from app.core.app_config import AppConfig
 from app.core.settings import Settings
 from app.core.tenancy import current_organization_id
 from app.models.entities import AuditEvent
