@@ -31,7 +31,8 @@ class CurrentIdentity:
 
 
 def _session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
-    return request.app.state.session_factory
+    factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
+    return factory
 
 
 def _csrf_ok(request: Request, session: UserSession) -> bool:

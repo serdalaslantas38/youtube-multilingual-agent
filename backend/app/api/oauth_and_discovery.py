@@ -236,7 +236,7 @@ async def oauth_google_callback(
 
     yt_client = _build_yt_client(request, bundle.access_token)
     try:
-        identity = await yt_client.get_authenticated_channel()
+        channel_identity = await yt_client.get_authenticated_channel()
     except YouTubeApiError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -249,7 +249,7 @@ async def oauth_google_callback(
             conn = await upsert_authorized_channel_connection(
                 session,
                 settings=settings,
-                identity=identity,
+                identity=channel_identity,
                 refresh_token=bundle.refresh_token,
                 scopes=bundle.scopes,
             )

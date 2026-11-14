@@ -6,8 +6,8 @@ import asyncio
 import base64
 import hashlib
 import secrets
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Callable, Mapping
+from typing import Any, Protocol, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -32,7 +32,8 @@ class GoogleOidcVerifier:
         from google.auth.transport.requests import Request as GoogleAuthRequest
         from google.oauth2 import id_token
 
-        return id_token.verify_oauth2_token(token, GoogleAuthRequest(), audience)
+        verify = cast(Callable[..., Mapping[str, Any]], id_token.verify_oauth2_token)
+        return verify(token, GoogleAuthRequest(), audience)
 
 
 def new_pkce_pair() -> tuple[str, str]:

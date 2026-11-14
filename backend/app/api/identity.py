@@ -67,7 +67,8 @@ class AuthMeResponse(BaseModel):
 
 
 def _factory(request: Request) -> async_sessionmaker[AsyncSession]:
-    return request.app.state.session_factory
+    factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
+    return factory
 
 
 def _secure_cookie(settings: Settings) -> bool:
@@ -212,19 +213,20 @@ async def _upsert_identity_and_session(
         user.email_verified = True
         user.updated_at = now
 
-        memberships = list(
-            (
-                await db.execute(
-                    select(OrganizationMember, Organization)
-                    .join(Organization, OrganizationMember.organization_id == Organization.id)
-                    .where(
-                        OrganizationMember.user_id == user.id,
-                        OrganizationMember.is_active.is_(True),
-                        Organization.is_active.is_(True),
-                    )
+        membership_rows = (
+            await db.execute(
+                select(OrganizationMember, Organization)
+                .join(Organization, OrganizationMember.organization_id == Organization.id)
+                .where(
+                    OrganizationMember.user_id == user.id,
+                    OrganizationMember.is_active.is_(True),
+                    Organization.is_active.is_(True),
                 )
-            ).all()
-        )
+            )
+        ).all()
+        memberships: list[tuple[OrganizationMember, Organization]] = [
+            (membership, organization) for membership, organization in membership_rows
+        ]
         if not memberships:
             allowlisted = {item.strip().lower() for item in settings.dashboard_allowed_emails}
             if normalized_email not in allowlisted:
