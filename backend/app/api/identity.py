@@ -85,7 +85,8 @@ def _client(request: Request) -> OAuthClientConfig:
         config = resolve_oauth_client_config(settings)
     except OAuthConfigurationError as exc:
         raise HTTPException(status_code=503, detail="OIDC is not configured.") from exc
-    return replace(config, redirect_uri=settings.google_oidc_redirect_uri)
+    effective_redirect = settings.google_oidc_redirect_uri.strip() or settings.google_redirect_uri
+    return replace(config, redirect_uri=effective_redirect)
 
 
 def _verifier(request: Request) -> OidcVerifier:
@@ -187,7 +188,8 @@ async def _upsert_identity_and_session(
         ).scalar_one_or_none()
         if user is None:
             allowlisted = {item.strip().lower() for item in settings.dashboard_allowed_emails}
-            if normalized_email not in allowlisted:
+            dev_open_allowlist = settings.app_env is AppEnv.DEVELOPMENT and not allowlisted
+            if not dev_open_allowlist and normalized_email not in allowlisted:
                 raise HTTPException(
                     status_code=403,
                     detail=(
@@ -229,7 +231,8 @@ async def _upsert_identity_and_session(
         ]
         if not memberships:
             allowlisted = {item.strip().lower() for item in settings.dashboard_allowed_emails}
-            if normalized_email not in allowlisted:
+            dev_open_allowlist = settings.app_env is AppEnv.DEVELOPMENT and not allowlisted
+            if not dev_open_allowlist and normalized_email not in allowlisted:
                 raise HTTPException(
                     status_code=403,
                     detail="This account has no active organization membership.",
@@ -302,7 +305,12 @@ async def oidc_login_callback(
 
     raw_session, _csrf, _org_id = await _upsert_identity_and_session(request, claims)
     settings: Settings = request.app.state.settings
-    result = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+    target_url = (
+        "http://localhost:5173/"
+        if settings.app_env is AppEnv.DEVELOPMENT and request.url.port == 8000
+        else "/"
+    )
+    result = RedirectResponse(target_url, status_code=status.HTTP_303_SEE_OTHER)
     result.set_cookie(
         SESSION_COOKIE,
         raw_session,

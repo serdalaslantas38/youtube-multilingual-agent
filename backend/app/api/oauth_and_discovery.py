@@ -6,7 +6,8 @@ OAuth tokens and secrets are encrypted at rest and never returned in responses.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -16,7 +17,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.dependencies import AdminAccess, CurrentIdentity, EditorAccess, ViewerAccess
+from app.api.dependencies import (
+    AdminAccess,
+    CurrentIdentity,
+    EditorAccess,
+    ViewerAccess,
+    require_current_principal,
+)
+from app.api.identity import OIDC_STATE_COOKIE, oidc_login_callback
 from app.core.app_config import AppConfig
 from app.core.crypto import TokenEncryptionError
 from app.core.settings import Settings
@@ -177,15 +185,40 @@ async def oauth_google_start(
     )
 
 
+async def _callback_admin_or_oidc(
+    request: Request,
+) -> AsyncIterator[CurrentIdentity | None]:
+    state = request.query_params.get("state")
+    state_store = _get_oauth_state_store(request)
+    if (state not in state_store._pending) and request.cookies.get(OIDC_STATE_COOKIE):
+        yield None
+        return
+
+    override = request.app.dependency_overrides.get(require_current_principal)
+    gen = override() if override is not None else require_current_principal(request)
+    async with aclosing(gen) as active_gen:  # type: ignore[type-var]
+        identity: CurrentIdentity = await anext(active_gen)
+        if identity.role not in ("owner", "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your organization role cannot perform this action.",
+            )
+        yield identity
+
+
 @router.get("/auth/callback", response_model=ChannelStatusResponse)
 async def oauth_google_callback(
     request: Request,
-    identity: Annotated[CurrentIdentity, Depends(AdminAccess)],
+    identity: Annotated[CurrentIdentity | None, Depends(_callback_admin_or_oidc)],
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
 ) -> Any:
     """Handle Google's OAuth 2.0 callback, verify channel identity, and store encrypted token."""
+    if identity is None:
+        return await oidc_login_callback(request, code=code, state=state, error=error)
+
+    state_store = _get_oauth_state_store(request)
     if error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -198,7 +231,6 @@ async def oauth_google_callback(
         )
 
     settings: Settings = request.app.state.settings
-    state_store = _get_oauth_state_store(request)
     try:
         pending = state_store.consume_session(state)
     except OAuthStateError as exc:

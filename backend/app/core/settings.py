@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     google_client_secret: SecretStr = SecretStr("")
     google_oauth_client_secrets_file: Path | None = None
     google_redirect_uri: str = "http://localhost:8000/auth/callback"
-    google_oidc_redirect_uri: str = "http://localhost:8000/auth/oidc/callback"
+    google_oidc_redirect_uri: str = ""
 
     # Gemini / Vertex AI
     gemini_api_key: SecretStr = SecretStr("")
