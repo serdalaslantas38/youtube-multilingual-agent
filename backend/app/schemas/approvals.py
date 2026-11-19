@@ -145,6 +145,7 @@ class LanguagePolicyItem(BaseModel):
     caption_tlang: str
     rtl: bool
     enabled: bool
+    popular: bool = False
     configured_mode: PublishMode
     effective_mode: PublishMode
 

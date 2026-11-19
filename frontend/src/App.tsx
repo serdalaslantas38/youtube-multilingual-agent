@@ -14,6 +14,32 @@ import type {
   VideoLocalizationResponse,
 } from "./types";
 
+const MOST_POPULAR_LANGUAGE_CODES: string[] = [
+  "ko",
+  "pl",
+  "it",
+  "de",
+  "ro",
+  "sr",
+  "bg",
+  "hr",
+  "en",
+  "cs",
+  "el",
+  "hu",
+  "bs",
+  "fr",
+  "es",
+  "pt-PT",
+  "sk",
+  "uk",
+  "az",
+  "ja",
+  "ru",
+  "nl",
+  "mk",
+];
+
 function formatSrtTime(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
   const millis = ms % 1000;
@@ -578,6 +604,27 @@ export function App() {
           >
             OAuth: {channelStatus?.status ?? "disconnected"}
           </span>
+          <button
+            className={
+              channelStatus?.connected ? "btn" : "btn btn-danger"
+            }
+            style={{ padding: "0.2rem 0.55rem", fontSize: "0.78rem" }}
+            onClick={async () => {
+              try {
+                const res = await dashboardApi.startGoogleOAuth();
+                window.location.href = res.authorization_url;
+              } catch (err) {
+                setErrorBanner(
+                  err instanceof Error ? err.message : String(err)
+                );
+              }
+            }}
+            title="Authorize or refresh YouTube OAuth 2.0 connection"
+          >
+            {channelStatus?.connected
+              ? "Reconnect OAuth"
+              : "Reconnect YouTube OAuth"}
+          </button>
           <span className="badge">
             Quota Today: {channelStatus?.today_quota_units_used ?? 0} /{" "}
             {channelStatus?.daily_quota_limit_estimate ?? 10000}
@@ -736,6 +783,40 @@ export function App() {
             </button>
           </div>
 
+          {channelStatus && !channelStatus.connected && (
+            <div
+              className="alert-banner badge-danger"
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <strong>YouTube OAuth Token Expired (401 Unauthorized):</strong>{" "}
+                {channelStatus.token_warning ??
+                  "Your Google OAuth refresh token has expired (Google expires 'Testing' consent screen tokens after 7 days)."}{" "}
+                Click <strong>Reconnect YouTube OAuth</strong> to re-authorize your channel.
+              </div>
+              <button
+                className="btn btn-primary"
+                onClick={async () => {
+                  try {
+                    const res = await dashboardApi.startGoogleOAuth();
+                    window.location.href = res.authorization_url;
+                  } catch (err) {
+                    setErrorBanner(
+                      err instanceof Error ? err.message : String(err)
+                    );
+                  }
+                }}
+              >
+                Reconnect YouTube OAuth
+              </button>
+            </div>
+          )}
           {busyMessage && (
             <div className="alert-banner badge-warning">{busyMessage}</div>
           )}
@@ -777,6 +858,25 @@ export function App() {
                       disabled={Boolean(busyMessage)}
                     >
                       Inspect Source Captions
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const configuredPopular = (
+                          policySettings?.languages ?? []
+                        )
+                          .filter((l) => l.enabled && l.popular)
+                          .map((l) => l.code);
+                        const targetCodes =
+                          configuredPopular.length > 0
+                            ? configuredPopular
+                            : MOST_POPULAR_LANGUAGE_CODES;
+                        void handleLocalizeVideo(targetCodes, "all");
+                      }}
+                      disabled={Boolean(busyMessage)}
+                      title="Translate Title, Description & Subtitles for the 23 most popular audience languages (fits within 1 day's 10,000 YouTube API quota)"
+                    >
+                      ★ Most Popular (Title, Desc & Subtitles)
                     </button>
                     <button
                       className="btn btn-primary"
@@ -861,6 +961,15 @@ export function App() {
                             {lang.name} ({lang.native_name})
                           </strong>{" "}
                           <code>{lang.code}</code>
+                          {(lang.popular ||
+                            MOST_POPULAR_LANGUAGE_CODES.includes(lang.code)) && (
+                            <span
+                              className="badge badge-warning"
+                              style={{ marginLeft: "0.35rem" }}
+                            >
+                              ★ Popular
+                            </span>
+                          )}
                           {lang.rtl && (
                             <span
                               className="badge"
@@ -1547,6 +1656,36 @@ export function App() {
               </table>
             </section>
           )}
+
+          <footer
+            style={{
+              marginTop: "2rem",
+              paddingTop: "0.75rem",
+              borderTop: "1px solid #e2e8f0",
+              fontSize: "0.8rem",
+              color: "#64748b",
+              display: "flex",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "0.75rem",
+            }}
+          >
+            <span>
+              <strong>YouTube Multilingual Publishing Agent</strong> · Official
+              YouTube Data API v3 Workflow
+            </span>
+            <span style={{ display: "flex", gap: "1rem" }}>
+              <a href="/home" target="_blank" rel="noreferrer">
+                App Homepage
+              </a>
+              <a href="/privacy" target="_blank" rel="noreferrer">
+                Privacy Policy
+              </a>
+              <a href="/terms" target="_blank" rel="noreferrer">
+                Terms of Service
+              </a>
+            </span>
+          </footer>
         </main>
       </div>
     </div>

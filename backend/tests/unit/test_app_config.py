@@ -56,16 +56,44 @@ ADDITIONAL_TARGETS = {
     "ga",
     "sv",
     "is",
+    "az",
 }
 ALL_CONFIGURED_TARGETS = INITIAL_TARGETS | ADDITIONAL_TARGETS
 APPROVAL_LANGS = {"es", "fr", "de", "ar", "it", "ru"}
+POPULAR_ORDERED_TARGETS = [
+    "ko",
+    "pl",
+    "it",
+    "de",
+    "ro",
+    "sr",
+    "bg",
+    "hr",
+    "en",
+    "cs",
+    "el",
+    "hu",
+    "bs",
+    "fr",
+    "es",
+    "pt-PT",
+    "sk",
+    "uk",
+    "az",
+    "ja",
+    "ru",
+    "nl",
+    "mk",
+]
 
 
 def test_repository_config_is_valid(config_dir: Path) -> None:
     cfg = load_app_config(config_dir)
     assert cfg.languages.source_language.code == "tr"
     assert set(cfg.languages.enabled_codes) == ALL_CONFIGURED_TARGETS
-    assert len(cfg.languages.enabled_codes) == 47
+    assert len(cfg.languages.enabled_codes) == 48
+    assert cfg.languages.popular_codes == POPULAR_ORDERED_TARGETS
+    assert cfg.languages.enabled_codes[:23] == POPULAR_ORDERED_TARGETS
 
 
 async def test_async_loader_matches_sync(config_dir: Path) -> None:

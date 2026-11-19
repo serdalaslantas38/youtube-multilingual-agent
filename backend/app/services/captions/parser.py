@@ -101,13 +101,79 @@ def serialize_subtitles_to_vtt(cues: Sequence[SubtitleCue]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+def _parse_timestamp_ms(raw: str, fmt: SubtitleFormat) -> int | None:
+    pattern = _SRT_TIME_RE if fmt is SubtitleFormat.SRT else _VTT_TIME_RE
+    match = pattern.match(raw.strip())
+    if not match:
+        return None
+    hours = int(match.group("h") or 0)
+    minutes = int(match.group("m"))
+    seconds = int(match.group("s"))
+    millis = int(match.group("ms"))
+    return ((hours * 3600 + minutes * 60 + seconds) * 1000) + millis
+
+
+def _parse_srt_timing_line(timing_line: str) -> tuple[int, int] | None:
+    """Parse an SRT ``HH:MM:SS,mmm --> HH:MM:SS,mmm`` line into ``(start_ms, end_ms)``."""
+    if "-->" not in timing_line:
+        return None
+    left_part, _, right_part = timing_line.partition("-->")
+    start_token = left_part.strip()
+    end_token = right_part.strip().split()[0] if right_part.strip() else ""
+    start_ms = _parse_timestamp_ms(start_token, SubtitleFormat.SRT)
+    end_ms = _parse_timestamp_ms(end_token, SubtitleFormat.SRT)
+    if start_ms is None or end_ms is None:
+        return None
+    return start_ms, end_ms
+
+
+def _resolve_srt_cue_timings(timings: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Repair overlapping, non-chronological, or zero-duration SRT cue timestamps.
+
+    YouTube ASR (rolling 2-line captions) and creator-edited SRT exports routinely emit
+    cues where ``cue[i].end_ms > cue[i+1].start_ms`` because line 1 remains visible while
+    line 2 rolls in. Clamping ``cue[i].end_ms`` to ``cue[i+1].start_ms`` converts rolling
+    display durations into standard non-overlapping SRT cues without altering cue start times.
+    """
+    if not timings:
+        return []
+
+    starts: list[int] = []
+    ends: list[int] = []
+    for raw_start, raw_end in timings:
+        start_ms = max(0, raw_start)
+        if starts and start_ms <= starts[-1]:
+            start_ms = starts[-1] + 10
+        starts.append(start_ms)
+        ends.append(raw_end)
+
+    resolved: list[tuple[int, int]] = []
+    total = len(starts)
+    for i in range(total):
+        start_ms = starts[i]
+        end_ms = ends[i]
+        if i + 1 < total:
+            next_start = starts[i + 1]
+            if end_ms > next_start:
+                end_ms = next_start
+            if end_ms <= start_ms:
+                end_ms = min(start_ms + 500, next_start)
+        else:
+            if end_ms <= start_ms:
+                end_ms = start_ms + 500
+        resolved.append((start_ms, end_ms))
+
+    return resolved
+
+
 def normalize_youtube_tlang_srt(raw_content: str | bytes) -> tuple[str, list[int]]:
-    """Repair internal blank lines inside YouTube ``tlang`` SRT cues and report empty cue indices.
+    """Repair internal blank lines and overlapping timestamps in YouTube ``tlang`` SRT cues.
 
     Live Stage 3b testing showed that ``captions.download?tfmt=srt&tlang=en`` can
     emit an empty first line inside a two-line cue (causing ``\\n\\n`` between the
-    timing line and the second text line) or leave a cue body completely empty when
-    Google Translate merges adjacent short cues.
+    timing line and the second text line), leave a cue body completely empty when
+    Google Translate merges adjacent short cues, or carry over ASR rolling timestamp
+    overlaps.
 
     Returns:
         ``(normalized_srt_text, empty_cue_indices)``
@@ -120,7 +186,7 @@ def normalize_youtube_tlang_srt(raw_content: str | bytes) -> tuple[str, list[int
     if not matches:
         return text, []
 
-    rebuilt_blocks: list[str] = []
+    parsed_entries: list[tuple[int, str, tuple[int, int] | None, list[str]]] = []
     empty_indices: list[int] = []
 
     for i, match in enumerate(matches):
@@ -132,25 +198,44 @@ def normalize_youtube_tlang_srt(raw_content: str | bytes) -> tuple[str, list[int
         non_empty_lines = [ln.strip() for ln in raw_body.split("\n") if ln.strip()]
         if not non_empty_lines:
             empty_indices.append(idx)
-            rebuilt_blocks.append(f"{idx}\n{timing}\n")
+        parsed_entries.append((idx, timing, _parse_srt_timing_line(timing), non_empty_lines))
+
+    if all(entry[2] is not None for entry in parsed_entries):
+        resolved_timings = _resolve_srt_cue_timings(
+            [entry[2] for entry in parsed_entries if entry[2] is not None]
+        )
+    else:
+        resolved_timings = []
+
+    rebuilt_blocks: list[str] = []
+    for i, (idx, raw_timing, _, non_empty_lines) in enumerate(parsed_entries):
+        if resolved_timings:
+            s_ms, e_ms = resolved_timings[i]
+            timing_str = f"{format_srt_timestamp(s_ms)} --> {format_srt_timestamp(e_ms)}"
+        else:
+            timing_str = raw_timing
+        if not non_empty_lines:
+            rebuilt_blocks.append(f"{idx}\n{timing_str}\n")
         else:
             body_str = "\n".join(non_empty_lines)
-            rebuilt_blocks.append(f"{idx}\n{timing}\n{body_str}")
+            rebuilt_blocks.append(f"{idx}\n{timing_str}\n{body_str}")
 
     return "\n\n".join(rebuilt_blocks) + "\n", empty_indices
 
 
 def normalize_source_srt(raw_content: str | bytes) -> str:
-    """Repair YouTube Studio source SRT quirks (internal blank lines and empty timing blocks).
+    """Repair YouTube Studio & ASR source SRT quirks (blank lines, empty blocks, overlapping cues).
 
-    YouTube's ``captions.download?tfmt=srt`` for creator-edited source tracks can include:
+    YouTube's ``captions.download?tfmt=srt`` for source tracks can include:
     1. Internal blank lines inside a multi-line cue (which naively splits one cue into an
        ``empty_cue_text`` block plus a ``malformed_cue_block`` without a timing header).
     2. Blank timing slots where caption text was cleared in YouTube Studio without deleting
        the cue slot (``empty_cue_text``).
+    3. Overlapping cue timestamps (``cue[i].end_ms > cue[i+1].start_ms``) on ``asr`` rolling
+       caption tracks or manually edited captions.
 
     This normalizer splits by cue headers (``idx + timing``), collapses internal blank lines,
-    drops empty source cues, and re-indexes sequentially ``1..N``.
+    drops empty source cues, clamps overlapping cue durations, and re-indexes sequentially ``1..N``.
     """
     decoded, _ = _decode_subtitle_bytes(raw_content)
     if not decoded:
@@ -160,8 +245,7 @@ def normalize_source_srt(raw_content: str | bytes) -> str:
     if not matches:
         return text
 
-    rebuilt_blocks: list[str] = []
-    seq_idx = 0
+    kept_entries: list[tuple[str, tuple[int, int] | None, str]] = []
     for i, match in enumerate(matches):
         timing = match.group("timing").strip()
         body_start = match.end()
@@ -170,23 +254,30 @@ def normalize_source_srt(raw_content: str | bytes) -> str:
         non_empty_lines = [ln.strip() for ln in raw_body.split("\n") if ln.strip()]
         if not non_empty_lines:
             continue
-        seq_idx += 1
         body_str = "\n".join(non_empty_lines)
-        rebuilt_blocks.append(f"{seq_idx}\n{timing}\n{body_str}")
+        kept_entries.append((timing, _parse_srt_timing_line(timing), body_str))
 
-    return ("\n\n".join(rebuilt_blocks) + "\n") if rebuilt_blocks else ""
+    if not kept_entries:
+        return ""
 
+    if all(entry[1] is not None for entry in kept_entries):
+        resolved_timings = _resolve_srt_cue_timings(
+            [entry[1] for entry in kept_entries if entry[1] is not None]
+        )
+    else:
+        resolved_timings = []
 
-def _parse_timestamp_ms(raw: str, fmt: SubtitleFormat) -> int | None:
-    pattern = _SRT_TIME_RE if fmt is SubtitleFormat.SRT else _VTT_TIME_RE
-    match = pattern.match(raw.strip())
-    if not match:
-        return None
-    hours = int(match.group("h") or 0)
-    minutes = int(match.group("m"))
-    seconds = int(match.group("s"))
-    millis = int(match.group("ms"))
-    return ((hours * 3600 + minutes * 60 + seconds) * 1000) + millis
+    rebuilt_blocks: list[str] = []
+    for i, (raw_timing, _, body_str) in enumerate(kept_entries):
+        seq_idx = i + 1
+        if resolved_timings:
+            s_ms, e_ms = resolved_timings[i]
+            timing_str = f"{format_srt_timestamp(s_ms)} --> {format_srt_timestamp(e_ms)}"
+        else:
+            timing_str = raw_timing
+        rebuilt_blocks.append(f"{seq_idx}\n{timing_str}\n{body_str}")
+
+    return "\n\n".join(rebuilt_blocks) + "\n"
 
 
 def _decode_subtitle_bytes(content: str | bytes) -> tuple[str | None, ValidationIssue | None]:

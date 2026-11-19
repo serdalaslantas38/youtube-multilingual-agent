@@ -120,6 +120,7 @@ async def resolve_effective_app_config(
                     caption_tlang=caption_tlang,
                     enabled=enabled,
                     rtl=rtl,
+                    popular=existing.popular,
                 )
             elif all(k in ev.details for k in ("name", "native_name", "caption_tlang")):
                 target_by_code[code] = TargetLanguage(
@@ -168,6 +169,7 @@ def build_policy_settings_response(
                 caption_tlang=lang.caption_tlang,
                 rtl=lang.rtl,
                 enabled=lang.enabled,
+                popular=lang.popular,
                 configured_mode=app_config.policy.configured_mode(lang.code),
                 effective_mode=app_config.policy.effective_mode(lang.code),
             )

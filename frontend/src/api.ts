@@ -59,6 +59,14 @@ export const dashboardApi = {
   getChannelStatus(): Promise<ChannelStatusResponse> {
     return requestJson<ChannelStatusResponse>("/api/channel/status");
   },
+  startGoogleOAuth(): Promise<{
+    authorization_url: string;
+    state: string;
+    scopes: string[];
+    redirect_uri: string;
+  }> {
+    return requestJson("/auth/google/start");
+  },
   listVideos(): Promise<DiscoveredVideoSummary[]> {
     return requestJson<DiscoveredVideoSummary[]>("/api/videos");
   },

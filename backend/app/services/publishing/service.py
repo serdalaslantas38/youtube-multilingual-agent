@@ -1796,9 +1796,16 @@ async def publish_ready_assets_for_video(
 
     now = _utc_now()
     lang_filter = {c.strip().lower() for c in languages} if languages else None
+    priority_rank = {
+        t.code.lower(): idx for idx, t in enumerate(app_config.languages.target_languages)
+    }
     candidates = sorted(
         video.language_assets,
-        key=lambda a: (a.language, 0 if a.kind is AssetKind.METADATA else 1),
+        key=lambda a: (
+            priority_rank.get(a.language.lower(), 9999),
+            a.language,
+            0 if a.kind is AssetKind.METADATA else 1,
+        ),
     )
 
     published_ids: list[int] = []

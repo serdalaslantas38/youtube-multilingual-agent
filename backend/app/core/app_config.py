@@ -44,6 +44,7 @@ class TargetLanguage(SourceLanguage):
     caption_tlang: str
     enabled: bool = True
     rtl: bool = False
+    popular: bool = False
 
     @field_validator("caption_tlang")
     @classmethod
@@ -74,6 +75,10 @@ class LanguagesConfig(_Strict):
     @property
     def enabled_codes(self) -> list[str]:
         return [t.code for t in self.target_languages if t.enabled]
+
+    @property
+    def popular_codes(self) -> list[str]:
+        return [t.code for t in self.target_languages if t.enabled and t.popular]
 
 
 class PublishMode(StrEnum):

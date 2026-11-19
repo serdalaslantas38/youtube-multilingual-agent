@@ -133,9 +133,23 @@ async def test_health_and_readiness_endpoints(tmp_path: Path, config_dir: Path) 
                 "ko",
                 "zh",
             } <= set(r_body["enabled_target_languages"])
-            assert len(r_body["enabled_target_languages"]) == 47
+            assert len(r_body["enabled_target_languages"]) == 48
             assert r_body["checks"]["database"] is True
             assert r_body["checks"]["config"] is True
+
+            home = await client.get("/home")
+            assert home.status_code == 200
+            assert "YouTube Multilingual Publishing Agent" in home.text
+            assert "/privacy" in home.text
+
+            privacy = await client.get("/privacy")
+            assert privacy.status_code == 200
+            assert "Google API Services User Data Policy" in privacy.text
+            assert "http://www.google.com/policies/privacy" in privacy.text
+
+            terms = await client.get("/terms")
+            assert terms.status_code == 200
+            assert "https://www.youtube.com/t/terms" in terms.text
 
 
 def test_alembic_upgrade_and_downgrade_sqlite(tmp_path: Path, repo_root: Path) -> None:

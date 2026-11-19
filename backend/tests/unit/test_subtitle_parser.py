@@ -6,6 +6,7 @@ import pytest
 
 from app.services.captions.parser import (
     SubtitleFormat,
+    normalize_source_srt,
     parse_and_validate_subtitles,
 )
 
@@ -171,3 +172,25 @@ def test_invalid_utf8_and_replacement_character_detection() -> None:
     doc2 = parse_and_validate_subtitles(mojibake, SubtitleFormat.SRT)
     assert doc2.is_valid is False
     assert any(i.code == "unicode_replacement_character" for i in doc2.report.issues)
+
+
+def test_normalize_source_srt_repairs_overlapping_asr_cues() -> None:
+    overlapping_asr_srt = (
+        "1\n00:00:01,200 --> 00:00:05,400\nMerhaba arkadaşlar\n\n"
+        "2\n00:00:03,100 --> 00:00:07,200\nBugün harika bir ipucu var\n\n"
+        "3\n00:00:05,400 --> 00:00:09,000\nHemen başlayalım\n"
+    )
+    raw_doc = parse_and_validate_subtitles(overlapping_asr_srt, SubtitleFormat.SRT)
+    assert raw_doc.is_valid is False
+    assert any(i.code == "overlapping_cue_timestamps" for i in raw_doc.report.issues)
+
+    repaired = normalize_source_srt(overlapping_asr_srt)
+    repaired_doc = parse_and_validate_subtitles(repaired, SubtitleFormat.SRT)
+    assert repaired_doc.is_valid is True
+    assert len(repaired_doc.cues) == 3
+    assert repaired_doc.cues[0].start_ms == 1200
+    assert repaired_doc.cues[0].end_ms == 3100
+    assert repaired_doc.cues[1].start_ms == 3100
+    assert repaired_doc.cues[1].end_ms == 5400
+    assert repaired_doc.cues[2].start_ms == 5400
+    assert repaired_doc.cues[2].end_ms == 9000

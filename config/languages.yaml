@@ -23,54 +23,176 @@ protected_glossary:
   - "@orchidhacks"
 
 target_languages:
-  - code: en
-    name: English
-    native_name: English
-    caption_tlang: en
+  # --- Top 25 Channel Audience Languages (23 unique non-TR languages in popularity order) ---
+  - code: ko
+    name: Korean
+    native_name: 한국어
+    caption_tlang: ko
     enabled: true
     rtl: false
-  - code: ro
-    name: Romanian
-    native_name: Română
-    caption_tlang: ro
+    popular: true
+  - code: pl
+    name: Polish
+    native_name: Polski
+    caption_tlang: pl
     enabled: true
     rtl: false
-  - code: es
-    name: Spanish
-    native_name: Español
-    caption_tlang: es
-    enabled: true
-    rtl: false
-  - code: fr
-    name: French
-    native_name: Français
-    caption_tlang: fr
-    enabled: true
-    rtl: false
-  - code: de
-    name: German
-    native_name: Deutsch
-    caption_tlang: de
-    enabled: true
-    rtl: false
-  - code: ar
-    name: Arabic
-    native_name: العربية
-    caption_tlang: ar
-    enabled: true
-    rtl: true
+    popular: true
   - code: it
     name: Italian
     native_name: Italiano
     caption_tlang: it
     enabled: true
     rtl: false
+    popular: true
+  - code: de
+    name: German
+    native_name: Deutsch
+    caption_tlang: de
+    enabled: true
+    rtl: false
+    popular: true
+  - code: ro
+    name: Romanian
+    native_name: Română
+    caption_tlang: ro
+    enabled: true
+    rtl: false
+    popular: true
+  - code: sr
+    name: Serbian
+    native_name: Српски
+    caption_tlang: sr
+    enabled: true
+    rtl: false
+    popular: true
+  - code: bg
+    name: Bulgarian
+    native_name: Български
+    caption_tlang: bg
+    enabled: true
+    rtl: false
+    popular: true
+  - code: hr
+    name: Croatian
+    native_name: Hrvatski
+    caption_tlang: hr
+    enabled: true
+    rtl: false
+    popular: true
+  - code: en
+    name: English
+    native_name: English
+    caption_tlang: en
+    enabled: true
+    rtl: false
+    popular: true
+  - code: cs
+    name: Czech
+    native_name: Čeština
+    caption_tlang: cs
+    enabled: true
+    rtl: false
+    popular: true
+  - code: el
+    name: Greek
+    native_name: Ελληνικά
+    caption_tlang: el
+    enabled: true
+    rtl: false
+    popular: true
+  - code: hu
+    name: Hungarian
+    native_name: Magyar
+    caption_tlang: hu
+    enabled: true
+    rtl: false
+    popular: true
+  - code: bs
+    name: Bosnian
+    native_name: Bosanski
+    caption_tlang: bs
+    enabled: true
+    rtl: false
+    popular: true
+  - code: fr
+    name: French
+    native_name: Français
+    caption_tlang: fr
+    enabled: true
+    rtl: false
+    popular: true
+  - code: es
+    name: Spanish
+    native_name: Español
+    caption_tlang: es
+    enabled: true
+    rtl: false
+    popular: true
+  - code: pt-PT
+    name: Portuguese (Portugal)
+    native_name: Português (Portugal)
+    caption_tlang: pt
+    enabled: true
+    rtl: false
+    popular: true
+  - code: sk
+    name: Slovak
+    native_name: Slovenčina
+    caption_tlang: sk
+    enabled: true
+    rtl: false
+    popular: true
+  - code: uk
+    name: Ukrainian
+    native_name: Українська
+    caption_tlang: uk
+    enabled: true
+    rtl: false
+    popular: true
+  - code: az
+    name: Azerbaijani
+    native_name: Azərbaycan dili
+    caption_tlang: az
+    enabled: true
+    rtl: false
+    popular: true
+  - code: ja
+    name: Japanese
+    native_name: 日本語
+    caption_tlang: ja
+    enabled: true
+    rtl: false
+    popular: true
   - code: ru
     name: Russian
     native_name: Русский
     caption_tlang: ru
     enabled: true
     rtl: false
+    popular: true
+  - code: nl
+    name: Dutch
+    native_name: Nederlands
+    caption_tlang: nl
+    enabled: true
+    rtl: false
+    popular: true
+  - code: mk
+    name: Macedonian
+    native_name: Македонски
+    caption_tlang: mk
+    enabled: true
+    rtl: false
+    popular: true
+
+  # --- Additional Languages ---
+  - code: ar
+    name: Arabic
+    native_name: العربية
+    caption_tlang: ar
+    enabled: true
+    rtl: true
   - code: sq
     name: Albanian
     native_name: Shqip
@@ -81,18 +203,6 @@ target_languages:
     name: Belarusian
     native_name: Беларуская
     caption_tlang: be
-    enabled: true
-    rtl: false
-  - code: bs
-    name: Bosnian
-    native_name: Bosanski
-    caption_tlang: bs
-    enabled: true
-    rtl: false
-  - code: bg
-    name: Bulgarian
-    native_name: Български
-    caption_tlang: bg
     enabled: true
     rtl: false
   - code: da
@@ -119,12 +229,6 @@ target_languages:
     caption_tlang: et
     enabled: true
     rtl: false
-  - code: nl
-    name: Dutch
-    native_name: Nederlands
-    caption_tlang: nl
-    enabled: true
-    rtl: false
   - code: fi
     name: Finnish
     native_name: Suomi
@@ -149,30 +253,6 @@ target_languages:
     caption_tlang: hi
     enabled: true
     rtl: false
-  - code: hr
-    name: Croatian
-    native_name: Hrvatski
-    caption_tlang: hr
-    enabled: true
-    rtl: false
-  - code: ja
-    name: Japanese
-    native_name: 日本語
-    caption_tlang: ja
-    enabled: true
-    rtl: false
-  - code: ko
-    name: Korean
-    native_name: 한국어
-    caption_tlang: ko
-    enabled: true
-    rtl: false
-  - code: pl
-    name: Polish
-    native_name: Polski
-    caption_tlang: pl
-    enabled: true
-    rtl: false
   - code: lv
     name: Latvian
     native_name: Latviešu
@@ -191,18 +271,6 @@ target_languages:
     caption_tlang: lb
     enabled: true
     rtl: false
-  - code: hu
-    name: Hungarian
-    native_name: Magyar
-    caption_tlang: hu
-    enabled: true
-    rtl: false
-  - code: mk
-    name: Macedonian
-    native_name: Македонски
-    caption_tlang: mk
-    enabled: true
-    rtl: false
   - code: ms
     name: Malay
     native_name: Bahasa Melayu
@@ -215,34 +283,10 @@ target_languages:
     caption_tlang: "no"
     enabled: true
     rtl: false
-  - code: pt-PT
-    name: Portuguese (Portugal)
-    native_name: Português (Portugal)
-    caption_tlang: pt
-    enabled: true
-    rtl: false
-  - code: sk
-    name: Slovak
-    native_name: Slovenčina
-    caption_tlang: sk
-    enabled: true
-    rtl: false
   - code: sl
     name: Slovenian
     native_name: Slovenščina
     caption_tlang: sl
-    enabled: true
-    rtl: false
-  - code: sr
-    name: Serbian
-    native_name: Српски
-    caption_tlang: sr
-    enabled: true
-    rtl: false
-  - code: uk
-    name: Ukrainian
-    native_name: Українська
-    caption_tlang: uk
     enabled: true
     rtl: false
   - code: ur
@@ -255,18 +299,6 @@ target_languages:
     name: Vietnamese
     native_name: Tiếng Việt
     caption_tlang: vi
-    enabled: true
-    rtl: false
-  - code: el
-    name: Greek
-    native_name: Ελληνικά
-    caption_tlang: el
-    enabled: true
-    rtl: false
-  - code: cs
-    name: Czech
-    native_name: Čeština
-    caption_tlang: cs
     enabled: true
     rtl: false
   - code: zh

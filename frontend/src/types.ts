@@ -213,6 +213,7 @@ export interface LanguagePolicyItem {
   caption_tlang: string;
   rtl: boolean;
   enabled: boolean;
+  popular?: boolean;
   configured_mode: PublishMode;
   effective_mode: PublishMode;
 }

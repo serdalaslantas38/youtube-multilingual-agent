@@ -19,6 +19,7 @@ from app.core.app_config import AppConfig
 from app.core.crypto import TokenEncryptionError
 from app.core.settings import Settings
 from app.models.entities import SourceCaptionTrack, Video
+from app.models.enums import ChannelConnectionStatus
 from app.schemas.youtube import (
     ChannelStatusResponse,
     DiscoveredVideoSummary,
@@ -168,7 +169,7 @@ async def oauth_google_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
-) -> ChannelStatusResponse:
+) -> Any:
     """Handle Google's OAuth 2.0 callback, verify channel identity, and store encrypted token."""
     if error:
         raise HTTPException(
@@ -248,8 +249,15 @@ async def oauth_google_callback(
                 detail=str(exc),
             ) from exc
 
+        accept_header = request.headers.get("accept", "")
+        if "text/html" in accept_header:
+            return RedirectResponse(
+                url="http://localhost:5173/?oauth=reconnected",
+                status_code=status.HTTP_302_FOUND,
+            )
+
         return ChannelStatusResponse(
-            connected=True,
+            connected=conn.status is ChannelConnectionStatus.CONNECTED,
             configured_channel_id=settings.youtube_channel_id or None,
             youtube_channel_id=conn.youtube_channel_id,
             channel_title=conn.channel_title,
@@ -281,7 +289,7 @@ async def get_channel_status(request: Request) -> ChannelStatusResponse:
                 today_quota_units_used=quota_today,
             )
         return ChannelStatusResponse(
-            connected=True,
+            connected=conn.status is ChannelConnectionStatus.CONNECTED,
             configured_channel_id=settings.youtube_channel_id or None,
             youtube_channel_id=conn.youtube_channel_id,
             channel_title=conn.channel_title,

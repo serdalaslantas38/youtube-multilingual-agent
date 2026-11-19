@@ -149,6 +149,8 @@ async def _ensure_source_caption_cues(
             return (), quota_used, track_row.download_error
 
         decoded_text = raw_bytes.decode("utf-8-sig")
+        track_row.raw_content = decoded_text
+        track_row.content_format = "srt"
         parsed_src = parse_and_validate_subtitles(decoded_text, SubtitleFormat.SRT)
         if not parsed_src.is_valid:
             repaired_text = normalize_source_srt(raw_bytes)
@@ -157,7 +159,7 @@ async def _ensure_source_caption_cues(
                 decoded_text = repaired_text
                 parsed_src = repaired_doc
             else:
-                codes = [i.code for i in parsed_src.report.issues]
+                codes = [i.code for i in repaired_doc.report.issues]
                 track_row.is_downloadable = False
                 track_row.download_error = f"Source subtitle validation failed: {codes}"
                 return (), quota_used, track_row.download_error
@@ -181,7 +183,7 @@ async def _ensure_source_caption_cues(
             track_row.is_downloadable = True
             track_row.download_error = None
             return repaired_cached_doc.cues, 0, None
-        codes = [i.code for i in parsed_cached.report.issues]
+        codes = [i.code for i in repaired_cached_doc.report.issues]
         return (), 0, f"Cached source subtitle failed validation: {codes}"
     return parsed_cached.cues, 0, None
 
