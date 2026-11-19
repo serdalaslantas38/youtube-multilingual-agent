@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Privacy Policy — YouTube Multilingual Publishing Agent</title>
+  <title>Privacy Policy — OrchidHacks Multilingual Studio</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -33,6 +33,7 @@
       display: flex;
       gap: 1.25rem;
       font-weight: 600;
+      flex-wrap: wrap;
     }
     .badge {
       display: inline-block;
@@ -50,42 +51,74 @@
 <body>
   <div class="container">
     <span class="badge">Privacy Policy</span>
-    <h1>Privacy Policy — YouTube Multilingual Publishing Agent</h1>
-    <p><strong>Effective Date:</strong> November 2026</p>
+    <h1>Privacy Policy — OrchidHacks Multilingual Studio</h1>
+    <p><strong>Effective Date:</strong> November 2026 · <strong>Application:</strong> OrchidHacks Multilingual Studio</p>
     <p>
-      This Privacy Policy explains how <strong>YouTube Multilingual Publishing Agent</strong>
-      accesses, uses, stores, and protects Google and YouTube user data when authorized by a
-      YouTube channel owner.
+      This Privacy Policy describes how <strong>OrchidHacks Multilingual Studio</strong> ("the Application",
+      "we", "us", or "our") collects, accesses, uses, stores, retains, and protects information obtained
+      from Google and YouTube APIs when an authorized user signs in and connects a YouTube channel.
     </p>
-    <h2>1. Google &amp; YouTube API Services Disclosure</h2>
+
+    <h2>1. Compliance with Google &amp; YouTube API Policies</h2>
     <p>
-      YouTube Multilingual Publishing Agent uses YouTube API Services and complies with the
+      OrchidHacks Multilingual Studio uses YouTube API Services. Our use and transfer to any other app of
+      information received from Google APIs adheres strictly to the
       <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>,
       including the Limited Use requirements, and the
       <a href="https://developers.google.com/youtube/terms/api-services-terms-of-service" target="_blank" rel="noopener">YouTube API Services Terms of Service</a>.
-      Please also review the
+      By using this Application, users also acknowledge the
       <a href="http://www.google.com/policies/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>.
     </p>
-    <h2>2. Data We Access</h2>
+
+    <h2>2. Information We Collect and Access</h2>
+    <p>When you authorize OrchidHacks Multilingual Studio via Google OAuth 2.0, we request and collect only the minimum data necessary to operate the localization workflow:</p>
     <ul>
-      <li><strong>YouTube Channel &amp; Video Metadata:</strong> Channel ID, channel title, uploads playlist items, video titles, descriptions, localizations, and caption tracks via scope <code>https://www.googleapis.com/auth/youtube.force-ssl</code>.</li>
-      <li><strong>Operator Identity:</strong> Basic account email address (<code>openid</code>, <code>email</code>) to verify authorized dashboard operators.</li>
+      <li><strong>Account Identity Data (Scopes <code>openid</code>, <code>email</code>, <code>profile</code>):</strong> Your Google Account email address, display name, and unique subject identifier used to authenticate your operator session and enforce workspace access controls.</li>
+      <li><strong>YouTube Channel &amp; Video Data (Scope <code>https://www.googleapis.com/auth/youtube.force-ssl</code>):</strong> Your YouTube channel ID, channel title, custom handle, uploads playlist ID, video IDs, source titles, source descriptions, existing video localizations, and closed-caption tracks (<code>captions.list</code>, <code>captions.download</code>, <code>captions.insert</code>, <code>videos.list</code>, <code>videos.update</code>).</li>
+      <li><strong>OAuth Credentials:</strong> OAuth 2.0 access tokens and refresh tokens issued by Google to perform authorized API requests on your behalf.</li>
     </ul>
-    <h2>3. How We Use and Store Your Data</h2>
+
+    <h2>3. How We Use Your Information</h2>
+    <p>We use the collected information exclusively for the following user-facing features requested by the authenticated channel owner:</p>
     <ul>
-      <li>Data is used exclusively to generate, review, validate, and publish multilingual titles, descriptions, and closed captions for the authorized YouTube channel.</li>
-      <li>OAuth 2.0 refresh tokens are encrypted at rest using symmetric authenticated encryption (Fernet) and stored only in the operator's database.</li>
-      <li>We never sell, rent, or transfer Google user data to third parties, and we never expose OAuth tokens or secrets to frontend clients or external LLMs.</li>
+      <li>Discovering uploaded videos and inspecting source subtitle tracks on the authenticated YouTube channel.</li>
+      <li>Generating, validating, and reviewing translated video titles, descriptions, and SRT subtitle files across configured target languages.</li>
+      <li>Publishing approved localized titles, descriptions, and closed-caption tracks back to the user's own YouTube videos and verifying publication status.</li>
+      <li>Maintaining an internal audit log and daily YouTube API quota ledger for the channel operator.</li>
     </ul>
-    <h2>4. Revoking Access &amp; Data Deletion</h2>
+
+    <h2>4. Data Sharing, Third Parties &amp; Limited Use</h2>
+    <ul>
+      <li><strong>No Sale or Advertising Use:</strong> We never sell, rent, license, or transfer Google user data to any third party, data broker, or advertising network.</li>
+      <li><strong>Translation Processing:</strong> Only public/creator video text (source titles, descriptions, and subtitle cue text) is processed through configured translation providers solely to produce the user's requested translations. OAuth tokens, email addresses, and account credentials are never sent to translation providers or language models.</li>
+      <li><strong>No Human Access Without Consent:</strong> No human other than the authenticated workspace owner/operator may view stored channel data unless explicitly authorized for support or required by law.</li>
+    </ul>
+
+    <h2>5. Data Storage, Security &amp; Encryption</h2>
+    <ul>
+      <li>All OAuth 2.0 refresh tokens are encrypted at rest before database storage using symmetric authenticated encryption (Fernet: AES-128-CBC with HMAC-SHA256) keyed via a secret environment key.</li>
+      <li>All network communication with Google and YouTube endpoints occurs exclusively over TLS/HTTPS.</li>
+      <li>OAuth tokens and client secrets are never returned in API responses or exposed to browser JavaScript.</li>
+    </ul>
+
+    <h2>6. Data Retention, Revocation &amp; Deletion</h2>
+    <ul>
+      <li><strong>Retention:</strong> Cached video metadata, localized drafts, and encrypted OAuth tokens are retained only while your channel connection remains active.</li>
+      <li><strong>Revoking Access:</strong> You may revoke OrchidHacks Multilingual Studio's access to your Google and YouTube data at any time through the <a href="https://security.google.com/settings/security/permissions" target="_blank" rel="noopener">Google Account Permissions page</a>.</li>
+      <li><strong>Deletion Requests:</strong> When you disconnect your channel or request deletion, your encrypted OAuth tokens and cached channel records are permanently deleted within 24 hours.</li>
+    </ul>
+
+    <h2>7. Contact Information</h2>
     <p>
-      You may revoke this application's access to your Google Account at any time via the
-      <a href="https://security.google.com/settings/security/permissions" target="_blank" rel="noopener">Google Security Settings page</a>.
-      Upon revocation or request, stored OAuth credentials and cached channel records are deleted immediately.
+      If you have questions about this Privacy Policy or wish to request data deletion, please contact
+      the OrchidHacks Multilingual Studio administrator via the support email listed on our Google OAuth
+      consent screen or through our project repository at
+      <a href="https://github.com/serdalaslantas38/youtube-multilingual-agent" target="_blank" rel="noopener">github.com/serdalaslantas38/youtube-multilingual-agent</a>.
     </p>
+
     <div class="nav">
-      <a href="./index.html">Application Homepage</a>
-      <a href="./terms.html">Terms of Service</a>
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/">Application Homepage</a>
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/terms.html">Terms of Service</a>
     </div>
   </div>
 </body>

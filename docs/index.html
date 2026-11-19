@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>YouTube Multilingual Publishing Agent — Official Application Homepage</title>
+  <title>OrchidHacks Multilingual Studio — Official Application Homepage</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -33,6 +33,7 @@
       display: flex;
       gap: 1.25rem;
       font-weight: 600;
+      flex-wrap: wrap;
     }
     .badge {
       display: inline-block;
@@ -49,28 +50,33 @@
 </head>
 <body>
   <div class="container">
-    <span class="badge">Official Application Homepage</span>
-    <h1>YouTube Multilingual Publishing Agent</h1>
+    <span class="badge">OrchidHacks Official Application</span>
+    <h1>OrchidHacks Multilingual Studio</h1>
     <p>
-      <strong>YouTube Multilingual Publishing Agent</strong> is a creator-operated localization
-      and publishing workflow application designed for the YouTube channel
-      <strong>HayataDairPüfNoktalar</strong> (<code>@orchidhacks</code>).
+      <strong>OrchidHacks Multilingual Studio</strong> is a creator-operated localization,
+      subtitle validation, and publishing workflow platform built by <strong>OrchidHacks</strong>
+      (<strong>HayataDairPüfNoktalar</strong> / <code>@orchidhacks</code>) to manage multilingual
+      video titles, descriptions, and closed captions across 48 languages.
     </p>
-    <h2>What This Application Does</h2>
+    <h2>Key Capabilities</h2>
     <ul>
-      <li>Discovers videos and inspects Turkish source subtitle tracks from the authenticated creator's YouTube channel via the official YouTube Data API v3.</li>
-      <li>Translates and validates video titles, descriptions, and SRT subtitle tracks across 48 target languages with human-in-the-loop quality review.</li>
-      <li>Publishes approved localized metadata (<code>videos.update</code>) and subtitle tracks (<code>captions.insert</code>) back to the creator's own YouTube videos with post-write verification.</li>
+      <li><strong>Channel &amp; Video Synchronization:</strong> Connects to the authorized creator's channel to list uploaded videos and inspect source Turkish subtitle tracks.</li>
+      <li><strong>Deterministic Subtitle &amp; Metadata Validation:</strong> Translates and validates titles, descriptions, and SRT closed-caption tracks across 48 target languages with human review and content-hash approval gates.</li>
+      <li><strong>Verified Publishing:</strong> Publishes approved localized metadata and subtitle tracks back to the creator's own videos with post-write verification and audit logging.</li>
     </ul>
-    <h2>Data Protection &amp; Google API Compliance</h2>
+    <h2>Privacy &amp; Data Protection</h2>
     <p>
-      This application accesses YouTube Data API v3 solely on behalf of the authenticated channel owner.
-      OAuth 2.0 refresh tokens are encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256) and are
-      never shared with third parties or exposed to language models.
+      OrchidHacks Multilingual Studio accesses Google and YouTube APIs strictly on behalf of the
+      authenticated channel owner. OAuth 2.0 tokens are encrypted at rest with Fernet
+      (AES-128-CBC + HMAC-SHA256) and are never shared with third parties.
+      Read our full
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/privacy.html">Privacy Policy</a>
+      and
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/terms.html">Terms of Service</a>.
     </p>
     <div class="nav">
-      <a href="./privacy.html">Privacy Policy</a>
-      <a href="./terms.html">Terms of Service</a>
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/privacy.html">Privacy Policy</a>
+      <a href="https://serdalaslantas38.github.io/youtube-multilingual-agent/terms.html">Terms of Service</a>
     </div>
   </div>
 </body>
