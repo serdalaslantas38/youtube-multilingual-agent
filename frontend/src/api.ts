@@ -5,6 +5,7 @@ import type {
   ChannelStatusResponse,
   DashboardOperatorResponse,
   DiscoveredVideoSummary,
+  OrganizationMembershipItem,
   PolicySettingsResponse,
   PublishAssetResponse,
   PublishMode,
@@ -12,13 +13,17 @@ import type {
 } from "./types";
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
   const response = await fetch(url, {
+    ...init,
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
+      ...(method !== "GET" && csrfToken
+        ? { "X-CSRF-Token": csrfToken }
+        : {}),
       ...(init?.headers ?? {}),
     },
-    ...init,
   });
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
@@ -41,20 +46,37 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
+let csrfToken = "";
+
 export const dashboardApi = {
   getOperator(): Promise<DashboardOperatorResponse> {
-    return requestJson<DashboardOperatorResponse>("/api/dashboard/auth/me");
-  },
-  loginOperator(email: string): Promise<DashboardOperatorResponse> {
-    return requestJson<DashboardOperatorResponse>("/api/dashboard/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email }),
+    return requestJson<DashboardOperatorResponse>("/api/auth/me").then((res) => {
+      csrfToken = res.csrf_token ?? "";
+      return res;
     });
   },
-  logoutOperator(): Promise<DashboardOperatorResponse> {
-    return requestJson<DashboardOperatorResponse>("/api/dashboard/auth/logout", {
+  startLogin(): void {
+    window.location.assign("/auth/oidc/start");
+  },
+  async activateOrganization(organizationId: string): Promise<DashboardOperatorResponse> {
+    const res = await requestJson<DashboardOperatorResponse>(
+      `/api/organizations/${encodeURIComponent(organizationId)}/activate`,
+      { method: "POST" }
+    );
+    csrfToken = res.csrf_token ?? csrfToken;
+    return res;
+  },
+  async logoutOperator(): Promise<void> {
+    const response = await fetch("/api/auth/logout", {
       method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": csrfToken },
     });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    csrfToken = "";
+    window.location.reload();
   },
   getChannelStatus(): Promise<ChannelStatusResponse> {
     return requestJson<ChannelStatusResponse>("/api/channel/status");
@@ -69,6 +91,9 @@ export const dashboardApi = {
   },
   listVideos(): Promise<DiscoveredVideoSummary[]> {
     return requestJson<DiscoveredVideoSummary[]>("/api/videos");
+  },
+  listOrganizations(): Promise<OrganizationMembershipItem[]> {
+    return requestJson<OrganizationMembershipItem[]>("/api/organizations");
   },
   discoverVideos(maxResults = 50): Promise<{
     channel_id: string;

@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     google_client_secret: SecretStr = SecretStr("")
     google_oauth_client_secrets_file: Path | None = None
     google_redirect_uri: str = "http://localhost:8000/auth/callback"
+    google_oidc_redirect_uri: str = "http://localhost:8000/auth/oidc/callback"
 
     # Gemini / Vertex AI
     gemini_api_key: SecretStr = SecretStr("")
@@ -87,8 +88,6 @@ class Settings(BaseSettings):
             errors.append("Token encryption requires ENCRYPTION_KEY or Cloud KMS project")
         if not self.websub_secret.get_secret_value():
             errors.append("WEBSUB_SECRET is required to authenticate upload notifications")
-        if not self.youtube_channel_id:
-            errors.append("YOUTUBE_CHANNEL_ID is required")
         if not self.dashboard_allowed_emails:
             errors.append("DASHBOARD_ALLOWED_EMAILS must list at least one account")
         return errors

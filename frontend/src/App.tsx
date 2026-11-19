@@ -88,7 +88,6 @@ export function App() {
   const [operator, setOperator] = useState<DashboardOperatorResponse | null>(
     null
   );
-  const [loginEmail, setLoginEmail] = useState("");
   const [channelStatus, setChannelStatus] =
     useState<ChannelStatusResponse | null>(null);
   const [videos, setVideos] = useState<DiscoveredVideoSummary[]>([]);
@@ -124,7 +123,7 @@ export function App() {
       setErrorBanner(null);
       const op = await dashboardApi.getOperator();
       setOperator(op);
-      if (!op.authenticated) {
+      if (!op.authenticated || !op.organization_id) {
         return;
       }
       const [chan, vids, pol, audits] = await Promise.all([
@@ -137,7 +136,10 @@ export function App() {
       setVideos(vids);
       setPolicySettings(pol);
       setAuditEvents(audits);
-      if (vids.length > 0 && !selectedVideoId) {
+      if (
+        vids.length > 0 &&
+        (!selectedVideoId || !vids.some((video) => video.youtube_video_id === selectedVideoId))
+      ) {
         const preferred =
           vids.find((v) => v.privacy_status === "private") ?? vids[0];
         setSelectedVideoId(preferred.youtube_video_id);
@@ -542,34 +544,49 @@ export function App() {
         <div className="editor-panel">
           <h2 style={{ marginTop: 0 }}>Dashboard Sign-In</h2>
           <p className="brand-subtitle">
-            Enter an allowlisted Google account email to access the review
-            dashboard.
+            Sign in with your verified Google account to access your workspace.
           </p>
           {errorBanner && (
             <div className="alert-banner badge-danger">{errorBanner}</div>
           )}
-          <input
-            type="email"
-            className="input-box"
-            placeholder="owner@example.com"
-            value={loginEmail}
-            onChange={(e) => setLoginEmail(e.target.value)}
-          />
           <button
             className="btn btn-primary"
-            onClick={async () => {
-              try {
-                const op = await dashboardApi.loginOperator(loginEmail);
-                setOperator(op);
-              } catch (err) {
-                setErrorBanner(
-                  err instanceof Error ? err.message : String(err)
-                );
-              }
-            }}
+            onClick={() => dashboardApi.startLogin()}
           >
-            Sign In
+            Continue with Google
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (operator?.authenticated && !operator.organization_id) {
+    return (
+      <div className="workspace" style={{ maxWidth: 560, margin: "4rem auto" }}>
+        <div className="editor-panel">
+          <h2 style={{ marginTop: 0 }}>Choose a workspace</h2>
+          <p className="brand-subtitle">
+            Signed in as {operator.email}. Select a workspace you belong to.
+          </p>
+          {operator.organizations.map((organization) => (
+            <button
+              className="btn btn-primary"
+              key={organization.id}
+              style={{ marginRight: "0.5rem", marginBottom: "0.5rem" }}
+              onClick={async () => {
+                try {
+                  const identity = await dashboardApi.activateOrganization(organization.id);
+                  setOperator(identity);
+                  await loadInitialData();
+                } catch (err) {
+                  setErrorBanner(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {organization.name} ({organization.role})
+            </button>
+          ))}
+          {errorBanner && <div className="alert-banner badge-danger">{errorBanner}</div>}
         </div>
       </div>
     );
@@ -651,7 +668,39 @@ export function App() {
             Auto-Publish:{" "}
             {policySettings?.global_auto_publish_enabled ? "ON" : "OFF"}
           </span>
-          <span className="badge">Operator: {operator?.email}</span>
+          <span className="badge">
+            {operator?.organization_name} · {operator?.email} ({operator?.role})
+          </span>
+          {operator && operator.organizations.length > 1 && (
+            <select
+              aria-label="Active workspace"
+              value={operator.organization_id ?? ""}
+              onChange={async (event) => {
+                try {
+                  const identity = await dashboardApi.activateOrganization(event.target.value);
+                  setOperator(identity);
+                  setSelectedVideoId(null);
+                  setLocalization(null);
+                  setSelectedAsset(null);
+                  await loadInitialData();
+                } catch (err) {
+                  setErrorBanner(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {operator.organizations.map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            className="btn"
+            onClick={() => void dashboardApi.logoutOperator()}
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 

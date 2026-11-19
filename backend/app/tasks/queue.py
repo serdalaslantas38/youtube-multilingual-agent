@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tenancy import current_organization_id
 from app.models.entities import Job, LanguageAsset
 from app.models.enums import (
     RETRYABLE_ASSET_STATES,
@@ -36,6 +37,7 @@ class EnqueueResult:
 async def enqueue_job_idempotent(
     session: AsyncSession,
     *,
+    organization_id: str | None = None,
     dedupe_key: str,
     job_type: JobType,
     payload: dict[str, Any],
@@ -50,13 +52,18 @@ async def enqueue_job_idempotent(
     """
     current = now or _utcnow()
     next_run = current + run_after if run_after else current
+    tenant_id = organization_id or current_organization_id()
 
-    stmt = select(Job).where(Job.dedupe_key == dedupe_key)
+    stmt = select(Job).where(
+        Job.organization_id == tenant_id,
+        Job.dedupe_key == dedupe_key,
+    )
     existing = (await session.execute(stmt)).scalar_one_or_none()
     if existing is not None:
         return EnqueueResult(job=existing, created=False)
 
     job = Job(
+        organization_id=tenant_id,
         dedupe_key=dedupe_key,
         job_type=job_type,
         state=JobState.QUEUED,
@@ -78,6 +85,7 @@ async def enqueue_video_upload_notification(
     youtube_video_id: str,
     youtube_channel_id: str,
     authorized_channel_id: str,
+    organization_id: str | None = None,
     now: datetime | None = None,
 ) -> EnqueueResult:
     """Validate that an upload notification belongs to the authorized channel and enqueue.
@@ -91,13 +99,16 @@ async def enqueue_video_upload_notification(
             f"authorized channel {authorized_channel_id!r}."
         )
     dedupe_key = f"process_video:{youtube_video_id}"
+    tenant_id = organization_id or current_organization_id()
     return await enqueue_job_idempotent(
         session,
+        organization_id=tenant_id,
         dedupe_key=dedupe_key,
         job_type=JobType.PROCESS_VIDEO,
         payload={
             "youtube_video_id": youtube_video_id,
             "youtube_channel_id": youtube_channel_id,
+            "organization_id": tenant_id,
         },
         now=now,
     )

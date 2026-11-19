@@ -14,12 +14,20 @@
 - `state` parameter + PKCE; redirect URI allowlist.
 - Refresh tokens encrypted at rest (Fernet locally, Cloud KMS envelope encryption
   in production); access tokens kept in memory only.
-- Channel binding: the authorized channel must equal `YOUTUBE_CHANNEL_ID`.
+- Channel binding: the migrated legacy workspace can retain the optional
+  `YOUTUBE_CHANNEL_ID` deployment pin. Other organizations bind the selected
+  channel to their membership-scoped workspace; a globally owned channel cannot
+  be connected to a second organization.
 
 ## Dashboard access
-- Sign-in with Google (`openid email`) restricted to `DASHBOARD_ALLOWED_EMAILS`,
-  or Cloud IAP. Session cookies: `HttpOnly`, `Secure`, `SameSite=Lax`, CSRF protection
-  on state-changing requests.
+- Sign-in uses Google OIDC (`openid email profile`) with state, nonce, PKCE,
+  signature/audience/issuer/expiry verification, and a verified email claim.
+  `DASHBOARD_ALLOWED_EMAILS` is used only to bootstrap a user's first legacy
+  workspace membership. The API ignores operator and IAP email headers.
+- The browser receives only an opaque session cookie; the database stores its hash.
+  Cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` in staging/production;
+  unsafe requests require a session-bound CSRF header. Every customer API checks
+  active membership and role, then binds the organization for tenant-scoped queries.
 
 ## Webhook
 - WebSub callback verifies `hub.challenge` only for subscriptions we initiated,

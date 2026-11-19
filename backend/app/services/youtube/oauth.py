@@ -111,6 +111,8 @@ class PendingOAuthSession:
     scopes: tuple[str, ...]
     created_at: datetime
     expires_at: datetime
+    user_id: str | None = None
+    organization_id: str | None = None
 
 
 @dataclass
@@ -125,6 +127,8 @@ class OAuthStateStore:
         *,
         redirect_uri: str,
         scopes: tuple[str, ...] = DEFAULT_YOUTUBE_SCOPES,
+        user_id: str | None = None,
+        organization_id: str | None = None,
         now: datetime | None = None,
     ) -> tuple[PendingOAuthSession, str]:
         """Create and store a pending OAuth session, returning `(session, code_challenge)`."""
@@ -139,6 +143,8 @@ class OAuthStateStore:
             scopes=scopes,
             created_at=current,
             expires_at=current + timedelta(seconds=self.ttl_seconds),
+            user_id=user_id,
+            organization_id=organization_id,
         )
         self._pending[state] = session
         return session, challenge

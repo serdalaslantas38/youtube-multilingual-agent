@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.settings import AppEnv, Settings
+from app.core.tenancy import LEGACY_ORGANIZATION_ID
 from app.main import create_app
 from app.models.entities import SourceCaptionTrack, Video
 from app.models.enums import (
@@ -21,6 +22,7 @@ from app.models.enums import (
 from app.schemas.localization import LocalizedMetadataLLMOutput
 from app.services.translation.providers import FakeStructuredLLMClient
 from app.services.youtube.captions_client import MockYouTubeCaptionClient
+from tests.conftest import authorize_test_app
 from tests.fixtures.turkish_golden import (
     GOLDEN_TURKISH_DESCRIPTION,
     GOLDEN_TURKISH_SRT,
@@ -48,6 +50,7 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
 ) -> None:
     settings = _make_test_settings(tmp_path, config_dir)
     app = create_app(settings)
+    authorize_test_app(app)
 
     fake_llm = FakeStructuredLLMClient()
     mock_captions = MockYouTubeCaptionClient()
@@ -85,6 +88,7 @@ async def test_localize_video_endpoint_end_to_end_with_skip_and_fallback(
         now = datetime.now(UTC)
         async with app.state.session_factory() as session:
             video = Video(
+                organization_id=LEGACY_ORGANIZATION_ID,
                 youtube_video_id="LYLLaIfYjWs",
                 youtube_channel_id="UCkL0_jtFQqNCGG2gTTXcZ7w",
                 source_language="tr",
@@ -202,6 +206,7 @@ async def test_localize_video_transitions_to_needs_attention_on_source_ambiguity
 ) -> None:
     settings = _make_test_settings(tmp_path, config_dir)
     app = create_app(settings)
+    authorize_test_app(app)
 
     fake_llm = FakeStructuredLLMClient(
         scripted_responses=[
@@ -219,6 +224,7 @@ async def test_localize_video_transitions_to_needs_attention_on_source_ambiguity
         now = datetime.now(UTC)
         async with app.state.session_factory() as session:
             video = Video(
+                organization_id=LEGACY_ORGANIZATION_ID,
                 youtube_video_id="NdOxYWETSdA",
                 youtube_channel_id="UCkL0_jtFQqNCGG2gTTXcZ7w",
                 source_language="tr",
